@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+package-lock.json
+
+# Capacitor & Android build outputs
+android/app/build/
+android/.gradle/
+android/local.properties
+android/captures/

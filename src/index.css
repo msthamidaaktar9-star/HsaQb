@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@import "@fontsource/hind-siliguri/bengali-400.css";
+@import "@fontsource/hind-siliguri/bengali-500.css";
+@import "@fontsource/hind-siliguri/bengali-600.css";
+@import "@fontsource/hind-siliguri/latin-400.css";
+@import "@fontsource/hind-siliguri/latin-500.css";
+@import "@fontsource/hind-siliguri/latin-600.css";
+@import "katex/dist/katex.min.css";
+
+:root {
+  --color-primary: #3B4FD8;
+  --color-primary-dark: #2A3BB0;
+  --color-primary-light: #EEF1FD;
+  --color-bg: #F2F4F8;
+  --color-card: #FFFFFF;
+  --color-border: #D5D9E2;
+  --color-text: #1B1F2A;
+  font-family: 'Hind Siliguri', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #F2F4F8;
+  color: #1B1F2A;
+  font-family: 'Hind Siliguri', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+/* 44px touch target guideline */
+.min-touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Smooth animations */
+.transition-touch {
+  transition: transform 0.1s ease, background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.transition-touch:active {
+  transform: scale(0.97);
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D5D9E2;
+  border-radius: 4px;
+}

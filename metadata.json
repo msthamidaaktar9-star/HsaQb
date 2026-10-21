@@ -1,0 +1,8 @@
+{
+  "name": "Qb Collection & Exam",
+  "description": "মোবাইল-ফার্স্ট অফলাইন প্রশ্ন ব্যাংক ও পরীক্ষা ম্যানেজমেন্ট অ্যাপ",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
