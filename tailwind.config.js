@@ -7,25 +7,24 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: {
+        brand: {
           DEFAULT: '#3B4FD8',
-          hover: '#2E3FB5',
-          light: '#EEF1FD',
           dark: '#2A3BB0',
+          light: '#EEF2FF',
         },
         surface: {
           bg: '#F2F4F8',
           card: '#FFFFFF',
           border: '#D5D9E2',
         },
-        content: {
-          primary: '#1B1F2A',
-          muted: '#64748B',
+        text: {
+          main: '#1B1F2A',
           blue: '#2A3BB0',
+          muted: '#64748B',
         },
       },
       fontFamily: {
-        sans: ['"Hind Siliguri"', 'sans-serif'],
+        bengali: ['"Hind Siliguri"', 'sans-serif'],
       },
     },
   },

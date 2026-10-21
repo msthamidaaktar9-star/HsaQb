@@ -7,67 +7,97 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-apk:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          cache: 'npm'
 
-      - name: Setup Java JDK
+      - name: Set up Java 21 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Install Dependencies & Build Web App
-        run: |
-          npm install --legacy-peer-deps
-          npm run build
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
 
-      - name: Add and Sync Android Platform
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Initialize Android platform if not present
         run: |
           if [ ! -d "android" ]; then
+            echo "Adding Android platform..."
             npx cap add android
           fi
+          echo "Syncing Android platform..."
           npx cap sync android
 
       - name: Accept Android SDK Licenses
         run: |
-          if [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || yes | sdkmanager --licenses || true
+
+      - name: Configure Kotlin Stdlib Resolution Strategy
+        run: |
+          BUILD_GRADLE="android/app/build.gradle"
+          TARGET_STRING='configurations.all { resolutionStrategy { force "org.jetbrains.kotlin:kotlin-stdlib:1.9.24" } }'
+          if [ -f "$BUILD_GRADLE" ]; then
+            if ! grep -q "kotlin-stdlib:1.9.24" "$BUILD_GRADLE"; then
+              echo "" >> "$BUILD_GRADLE"
+              echo "$TARGET_STRING" >> "$BUILD_GRADLE"
+              echo "Appended Kotlin stdlib force resolution strategy to $BUILD_GRADLE"
+            else
+              echo "Kotlin stdlib force resolution strategy already present in $BUILD_GRADLE"
+            fi
           else
-            yes | sdkmanager --licenses || true
+            echo "Error: $BUILD_GRADLE not found!"
+            exit 1
           fi
 
-      - name: Configure Kotlin Dependency Resolution
-        run: |
-          if ! grep -q "org.jetbrains.kotlin:kotlin-stdlib:1.9.24" android/app/build.gradle; then
-            echo "" >> android/app/build.gradle
-            echo 'configurations.all { resolutionStrategy { force "org.jetbrains.kotlin:kotlin-stdlib:1.9.24" } }' >> android/app/build.gradle
-          fi
+      - name: Grant execute permission for gradlew
+        run: chmod +x android/gradlew
 
-      - name: Build Debug APK
+      - name: Build Debug APK with Gradle
         run: |
-          chmod +x android/gradlew
-          cd android && ./gradlew assembleDebug
+          cd android
+          ./gradlew assembleDebug
+
+      - name: Locate Debug APK
+        id: find_apk
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: APK not found!"
+            exit 1
+          fi
+          echo "Found APK at: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: qb-collection-exam-debug-${{ github.run_number }}
+          path: ${{ steps.find_apk.outputs.apk_path }}
+          retention-days: 14
 
-      - name: Publish GitHub Release
+      - name: Create GitHub Release with APK
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
-          name: Qb Collection & Exam - Build ${{ github.run_number }}
-          files: android/app/build/outputs/apk/debug/app-debug.apk
+          name: Release build-${{ github.run_number }}
+          body: |
+            Automated build for Qb Collection & Exam (Run #${{ github.run_number }}).
+            Download the attached debug APK to install on Android devices.
+          files: ${{ steps.find_apk.outputs.apk_path }}
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,5 +1,5 @@
-import React from 'react';
-import { AlertTriangle } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { AlertCircle } from 'lucide-react';
 
 export interface ConfirmDialogProps {
   isOpen: boolean;
@@ -7,21 +7,35 @@ export interface ConfirmDialogProps {
   message?: string;
   confirmText?: string;
   cancelText?: string;
+  isDestructive?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
-  isDestructive?: boolean;
 }
 
 export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   isOpen,
   title = 'আপনি কি নিশ্চিত?',
-  message = 'এই কাজটি সম্পন্ন করার পর পরিবর্তন করা নাও যেতে পারে।',
+  message = 'এই কাজটি সম্পন্ন করার বিষয়ে কি আপনি নিশ্চিত?',
   confirmText = 'হ্যাঁ',
   cancelText = 'না',
+  isDestructive = false,
   onConfirm,
   onCancel,
-  isDestructive = false,
 }) => {
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isOpen) {
+        onCancel();
+      }
+    };
+    if (isOpen) {
+      document.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onCancel]);
+
   if (!isOpen) return null;
 
   return (
@@ -29,48 +43,44 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
-      aria-describedby="confirm-dialog-desc"
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs transition-opacity animate-in fade-in duration-150"
+      onClick={onCancel}
     >
-      <div className="bg-white w-full max-w-[340px] rounded-2xl shadow-2xl border border-[#D5D9E2] p-5 space-y-4 animate-scale-up">
-        <div className="flex items-center gap-3">
+      <div
+        className="w-full max-w-[340px] bg-white rounded-2xl p-5 shadow-2xl border border-[#D5D9E2] space-y-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
           <div
-            className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
-              isDestructive ? 'bg-red-50 text-red-600' : 'bg-[#EEF1FD] text-[#3B4FD8]'
+            className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
+              isDestructive ? 'bg-red-50 text-red-600' : 'bg-[#EEF2FF] text-[#3B4FD8]'
             }`}
           >
-            <AlertTriangle className="w-6 h-6" />
+            <AlertCircle className="w-5 h-5" />
           </div>
-          <div>
+          <div className="space-y-1">
             <h3 id="confirm-dialog-title" className="text-base font-semibold text-[#1B1F2A]">
               {title}
             </h3>
+            {message && <p className="text-sm text-[#64748B] leading-relaxed">{message}</p>}
           </div>
         </div>
 
-        {message && (
-          <p id="confirm-dialog-desc" className="text-sm text-slate-600 leading-relaxed">
-            {message}
-          </p>
-        )}
-
-        <div className="flex items-center gap-2.5 pt-2">
+        <div className="grid grid-cols-2 gap-3 pt-2">
           <button
             type="button"
             onClick={onCancel}
-            aria-label={cancelText}
-            className="flex-1 min-h-[44px] px-4 py-2.5 rounded-xl border border-[#D5D9E2] text-sm font-medium text-[#1B1F2A] bg-white hover:bg-[#F2F4F8] active:bg-[#E5E9F0] transition-colors flex items-center justify-center"
+            className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[#D5D9E2] text-sm font-medium text-[#1B1F2A] bg-white hover:bg-[#F2F4F8] active:bg-[#E5E9F0] transition-colors focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
           >
             {cancelText}
           </button>
           <button
             type="button"
             onClick={onConfirm}
-            aria-label={confirmText}
-            className={`flex-1 min-h-[44px] px-4 py-2.5 rounded-xl text-sm font-semibold text-white shadow-sm transition-colors flex items-center justify-center ${
+            className={`w-full min-h-[44px] px-4 py-2.5 rounded-xl text-sm font-medium text-white transition-colors focus:outline-none focus:ring-2 ${
               isDestructive
-                ? 'bg-[#EF4444] hover:bg-red-600 active:bg-red-700'
-                : 'bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91]'
+                ? 'bg-red-600 hover:bg-red-700 active:bg-red-800 focus:ring-red-400'
+                : 'bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91] focus:ring-[#3B4FD8]'
             }`}
           >
             {confirmText}

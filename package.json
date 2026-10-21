@@ -1,7 +1,7 @@
 {
-  "name": "qb-collection-and-exam",
+  "name": "react-example",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -33,7 +33,6 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^7.0.0",
-    "@tailwindcss/postcss": "^4.3.3",
     "@types/express": "^4.17.21",
     "@types/katex": "^0.16.8",
     "@types/node": "^22.14.0",
@@ -44,6 +43,6 @@
     "postcss": "^8.5.31",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.21.0",
-    "typescript": "^5.8.2"
+    "typescript": "^7.0.2"
   }
 }

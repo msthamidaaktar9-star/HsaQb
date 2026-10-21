@@ -7,136 +7,117 @@ export interface RichTextProps {
   className?: string;
 }
 
-interface TextToken {
+interface Segment {
   type: 'text' | 'inline-math' | 'block-math';
   content: string;
-  raw: string;
 }
 
-function parseLatexTokens(text: string): TextToken[] {
-  if (!text) return [];
+/**
+ * Tokenize string into regular text, inline math ($...$), and block math ($$...$$)
+ */
+function parseSegments(rawText: string): Segment[] {
+  if (!rawText) return [];
 
-  const tokens: TextToken[] = [];
-  // Match $$...$$ first, then $...$
-  const regex = /(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$)/g;
+  const segments: Segment[] = [];
+  // Matches $$...$$ or $...$
+  const regex = /(\$\$[\s\S]*?\$\$|\$[^\$\n]+?\$)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      const textChunk = text.substring(lastIndex, match.index);
-      tokens.push({
+  while ((match = regex.exec(rawText)) !== null) {
+    const matchIndex = match.index;
+
+    // Normal text preceding the math
+    if (matchIndex > lastIndex) {
+      segments.push({
         type: 'text',
-        content: textChunk,
-        raw: textChunk,
+        content: rawText.substring(lastIndex, matchIndex),
       });
     }
 
-    const matchedStr = match[0];
-    if (matchedStr.startsWith('$$') && matchedStr.endsWith('$$') && matchedStr.length >= 4) {
-      tokens.push({
+    const token = match[0];
+    if (token.startsWith('$$') && token.endsWith('$$')) {
+      segments.push({
         type: 'block-math',
-        content: matchedStr.slice(2, -2).trim(),
-        raw: matchedStr,
+        content: token.slice(2, -2).trim(),
       });
-    } else if (matchedStr.startsWith('$') && matchedStr.endsWith('$') && matchedStr.length >= 2) {
-      tokens.push({
+    } else if (token.startsWith('$') && token.endsWith('$')) {
+      segments.push({
         type: 'inline-math',
-        content: matchedStr.slice(1, -1).trim(),
-        raw: matchedStr,
+        content: token.slice(1, -1).trim(),
       });
     } else {
-      tokens.push({
+      segments.push({
         type: 'text',
-        content: matchedStr,
-        raw: matchedStr,
+        content: token,
       });
     }
 
     lastIndex = regex.lastIndex;
   }
 
-  if (lastIndex < text.length) {
-    const trailingChunk = text.substring(lastIndex);
-    tokens.push({
+  // Trailing normal text
+  if (lastIndex < rawText.length) {
+    segments.push({
       type: 'text',
-      content: trailingChunk,
-      raw: trailingChunk,
+      content: rawText.substring(lastIndex),
     });
   }
 
-  return tokens;
+  return segments;
 }
 
 export const RichText: React.FC<RichTextProps> = ({ text, className = '' }) => {
-  const tokens = useMemo(() => parseLatexTokens(text), [text]);
+  const segments = useMemo(() => parseSegments(text), [text]);
 
   if (!text) {
     return null;
   }
 
   return (
-    <div className={`whitespace-pre-wrap leading-relaxed text-[#1B1F2A] ${className}`}>
-      {tokens.map((token, index) => {
-        if (token.type === 'text') {
-          return <span key={index}>{token.content}</span>;
+    <div className={`whitespace-pre-wrap break-words leading-relaxed text-[#1B1F2A] ${className}`}>
+      {segments.map((segment, index) => {
+        if (segment.type === 'text') {
+          return <span key={index}>{segment.content}</span>;
         }
 
-        if (token.type === 'inline-math') {
-          try {
-            const html = katex.renderToString(token.content, {
-              displayMode: false,
-              throwOnError: true,
-            });
+        const isBlock = segment.type === 'block-math';
+
+        try {
+          const renderedHtml = katex.renderToString(segment.content, {
+            displayMode: isBlock,
+            throwOnError: true,
+          });
+
+          if (isBlock) {
             return (
               <span
                 key={index}
-                dangerouslySetInnerHTML={{ __html: html }}
-                className="inline-block align-baseline px-0.5"
+                className="block my-2 text-center overflow-x-auto py-1 max-w-full select-text"
+                dangerouslySetInnerHTML={{ __html: renderedHtml }}
               />
             );
-          } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : 'LaTeX Error';
-            return (
-              <span
-                key={index}
-                title={errorMessage}
-                className="inline-block text-red-600 bg-red-50 border border-red-300 rounded px-1 py-0.5 text-xs font-mono select-text"
-              >
-                {token.raw}
-              </span>
-            );
           }
-        }
 
-        if (token.type === 'block-math') {
-          try {
-            const html = katex.renderToString(token.content, {
-              displayMode: true,
-              throwOnError: true,
-            });
-            return (
-              <div
-                key={index}
-                dangerouslySetInnerHTML={{ __html: html }}
-                className="my-3 overflow-x-auto py-1 text-center"
-              />
-            );
-          } catch (err) {
-            const errorMessage = err instanceof Error ? err.message : 'LaTeX Error';
-            return (
-              <div
-                key={index}
-                title={errorMessage}
-                className="my-2 p-2.5 text-red-600 bg-red-50 border border-red-300 rounded-lg text-xs font-mono overflow-x-auto text-left select-text"
-              >
-                {token.raw}
-              </div>
-            );
-          }
+          return (
+            <span
+              key={index}
+              className="inline-block mx-0.5 align-middle select-text"
+              dangerouslySetInnerHTML={{ __html: renderedHtml }}
+            />
+          );
+        } catch (error: any) {
+          // If error occurs, do not crash! Display faulty code in red.
+          return (
+            <span
+              key={index}
+              title={`LaTeX Error: ${error?.message || 'Syntax error'}`}
+              className="inline-block text-red-600 bg-red-50 border border-red-200 px-1 py-0.5 mx-0.5 rounded text-xs font-mono break-all align-middle"
+            >
+              {isBlock ? `$$${segment.content}$$` : `$${segment.content}$`}
+            </span>
+          );
         }
-
-        return null;
       })}
     </div>
   );

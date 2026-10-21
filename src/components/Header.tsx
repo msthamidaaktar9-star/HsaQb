@@ -1,58 +1,62 @@
 import React from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { KebabMenu, MenuItem } from './KebabMenu';
+import { KebabMenu, type MenuItem } from './KebabMenu';
 
 export interface HeaderProps {
   title: string;
-  canGoBack?: boolean;
-  onBack?: () => void;
-  menuItems?: MenuItem[];
   subtitle?: string;
+  onBack?: () => void;
+  showBack?: boolean;
+  menuItems?: MenuItem[];
+  rightAction?: React.ReactNode;
 }
 
 export const Header: React.FC<HeaderProps> = ({
   title,
-  canGoBack = false,
-  onBack,
-  menuItems = [],
   subtitle,
+  onBack,
+  showBack = false,
+  menuItems = [],
+  rightAction,
 }) => {
   return (
-    <header className="sticky top-0 z-30 bg-[#3B4FD8] text-white shadow-md select-none">
-      <div className="flex items-center justify-between px-3 h-14">
-        {/* Left section: Back button or app badge */}
-        <div className="flex items-center gap-2 min-w-[44px]">
-          {canGoBack ? (
+    <header className="sticky top-0 z-40 bg-[#3B4FD8] text-white shadow-md select-none transition-colors">
+      <div className="flex items-center justify-between px-3 h-14 max-w-[390px] mx-auto">
+        {/* Left Side: Back button or placeholder */}
+        <div className="flex items-center min-w-[44px]">
+          {showBack && onBack ? (
             <button
               type="button"
+              aria-label="ফিরে যান"
               onClick={onBack}
-              aria-label="পেছনে যান"
-              className="min-touch-target p-2 rounded-xl text-white hover:bg-white/15 active:bg-white/25 transition-colors flex items-center justify-center cursor-pointer"
+              className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full text-white/90 hover:text-white hover:bg-white/10 active:bg-white/20 transition-colors focus:outline-none focus:ring-2 focus:ring-white/40"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
           ) : (
             <div className="w-2" />
           )}
-          <div>
-            <h1 className="text-lg font-semibold tracking-wide text-white leading-tight">
-              {title}
-            </h1>
-            {subtitle && (
-              <p className="text-xs text-white/80 font-normal leading-none mt-0.5">
-                {subtitle}
-              </p>
-            )}
-          </div>
         </div>
 
-        {/* Right section: Kebab Menu */}
-        <div className="flex items-center">
-          <KebabMenu
-            items={menuItems}
-            ariaLabel="মেনু বিকল্প"
-            align="right"
-          />
+        {/* Center: Title */}
+        <div className="flex-1 text-center px-2 min-w-0">
+          <h1 className="text-lg font-semibold tracking-tight text-white truncate leading-tight">
+            {title}
+          </h1>
+          {subtitle && (
+            <p className="text-[11px] text-white/80 truncate leading-tight mt-0.5">
+              {subtitle}
+            </p>
+          )}
+        </div>
+
+        {/* Right Side: KebabMenu or custom right action */}
+        <div className="flex items-center justify-end min-w-[44px]">
+          {rightAction ? (
+            rightAction
+          ) : (
+            <KebabMenu items={menuItems} buttonAriaLabel="মেনু" align="right" />
+          )}
         </div>
       </div>
     </header>
