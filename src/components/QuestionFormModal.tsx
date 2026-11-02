@@ -81,25 +81,81 @@ const RATING_OPTIONS: Array<{ value: number; label: string }> = [
 
 type EditorMode = 'minimum' | 'full';
 
-/** Small rating dropdown (1-5) placed next to the eye (live preview) button */
+/** Height shared by the small controls (board / eye / rating) so they line up on one row */
+const CTRL_H = 32;
+
+/**
+ * Compact rating dropdown (1-5). Closed: only "৩★". Opened: the full list ("৩★ মাঝারি" …).
+ */
 const RatingSelect: React.FC<{ value: number; onChange: (v: number) => void; ariaLabel: string }> = ({
   value,
   onChange,
   ariaLabel,
-}) => (
-  <select
-    aria-label={ariaLabel}
-    value={value || 3}
-    onChange={(e) => onChange(parseInt(e.target.value, 10))}
-    className="min-h-[40px] max-w-[116px] px-2 py-1 rounded-lg border border-[#FDE047] bg-[#FEF9C3] text-[#713F12] text-[0.6875rem] font-bold focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
-  >
-    {RATING_OPTIONS.map((r) => (
-      <option key={r.value} value={r.value}>
-        {toBn(r.value)}★ {r.label}
-      </option>
-    ))}
-  </select>
-);
+}) => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const current = value || 3;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: Event) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('touchstart', onDown);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('touchstart', onDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="relative shrink-0" ref={wrapRef}>
+      <button
+        type="button"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        style={{ minHeight: 0, height: CTRL_H }}
+        className="px-1.5 rounded-md border border-[#FDE047] bg-[#FEF9C3] text-[#713F12] text-[0.6875rem] font-bold flex items-center gap-0.5 focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+      >
+        <span>{toBn(current)}★</span>
+        <ChevronDown className="w-3 h-3 opacity-70" />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          aria-label={ariaLabel}
+          className="absolute right-0 top-full mt-1 z-30 w-36 rounded-lg border border-[#FDE047] bg-white shadow-xl py-1"
+        >
+          {RATING_OPTIONS.map((r) => (
+            <button
+              key={r.value}
+              type="button"
+              role="option"
+              aria-selected={r.value === current}
+              onClick={() => {
+                setOpen(false);
+                onChange(r.value);
+              }}
+              style={{ minHeight: 36 }}
+              className={`w-full px-3 text-left text-xs font-semibold flex items-center justify-between ${
+                r.value === current ? 'bg-[#FEF9C3] text-[#713F12]' : 'text-[#1B1F2A] hover:bg-[#FEFCE8]'
+              }`}
+            >
+              <span>
+                {toBn(r.value)}★ {r.label}
+              </span>
+              {r.value === current && <Check className="w-3.5 h-3.5" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 /** Eye button that toggles the live KaTeX preview */
 const EyeToggle: React.FC<{ open: boolean; onClick: () => void }> = ({ open, onClick }) => (
@@ -108,7 +164,8 @@ const EyeToggle: React.FC<{ open: boolean; onClick: () => void }> = ({ open, onC
     aria-label={open ? 'লাইভ প্রিভিউ বন্ধ করুন' : 'লাইভ প্রিভিউ দেখুন'}
     aria-pressed={open}
     onClick={onClick}
-    className={`min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border transition-colors ${
+    style={{ minHeight: 0, height: CTRL_H, width: CTRL_H }}
+    className={`shrink-0 flex items-center justify-center rounded-md border transition-colors ${
       open
         ? 'bg-[#3B4FD8] border-[#3B4FD8] text-white'
         : 'bg-[#EEF2FF] border-[#D5D9E2] text-[#3B4FD8] hover:bg-[#E0E7FF]'
@@ -152,7 +209,8 @@ const BoardSelect: React.FC<{
       }
       onPick(v);
     }}
-    className="min-h-[40px] w-[64px] px-1 py-1 rounded-lg border border-[#D5D9E2] bg-white text-[#2A3BB0] text-[0.6875rem] font-bold focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+    style={{ height: CTRL_H }}
+    className="w-[54px] shrink-0 px-1 py-0 rounded-md border border-[#D5D9E2] bg-white text-[#2A3BB0] text-[0.625rem] font-bold focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
   >
     <option value="" disabled>
       বোর্ড
@@ -166,20 +224,20 @@ const BoardSelect: React.FC<{
   </select>
 );
 
-/** Board + year tags already added to one section (উদ্দীপক / গ / ঘ …). Nothing is shown when empty. */
+/** Board + year tags already added to one section (উদ্দীপক / গ / ঘ …) — small chips. Nothing is shown when empty. */
 const BoardChips: React.FC<{ chips: BoardUsage[]; onRemove: (board: string, year: number) => void }> = ({
   chips,
   onRemove,
 }) => {
   if (chips.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
-      <Tag className="w-3.5 h-3.5 text-[#3B4FD8] shrink-0" />
+    <div className="flex flex-wrap items-center gap-1">
+      <Tag className="w-3 h-3 text-[#3B4FD8] shrink-0" />
       {chips.map((c) =>
         c.years.map((y) => (
           <span
             key={`${c.board}-${y}`}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#EEF2FF] text-[#2A3BB0] border border-[#D5D9E2] text-xs font-semibold"
+            className="inline-flex items-center gap-1 pl-1.5 pr-0.5 h-5 rounded-md bg-[#EEF2FF] text-[#2A3BB0] border border-[#D5D9E2] text-[0.625rem] font-semibold leading-none"
           >
             <span>
               {c.board}'{toBn(String(y).slice(-2))}
@@ -188,9 +246,10 @@ const BoardChips: React.FC<{ chips: BoardUsage[]; onRemove: (board: string, year
               type="button"
               aria-label={`${c.board} ${y} ট্যাগ মুছুন`}
               onClick={() => onRemove(c.board, y)}
-              className="w-4 h-4 rounded-full flex items-center justify-center text-[#64748B] hover:text-red-600 hover:bg-white transition-colors"
+              style={{ minHeight: 0 }}
+              className="w-4 h-4 rounded flex items-center justify-center text-[#64748B] hover:text-red-600 hover:bg-white transition-colors"
             >
-              <X className="w-3 h-3" />
+              <X className="w-2.5 h-2.5" />
             </button>
           </span>
         ))
@@ -336,7 +395,10 @@ const BoardYearWindow: React.FC<BoardYearWindowProps> = ({
 };
 
 interface ImageStripProps {
-  title: string;
+  /** optional heading — the stimulus picture row shows only a "+" button, no text */
+  title?: string;
+  /** hide the "+" button (used for গ / ঘ: no new pictures, only already-saved ones stay manageable) */
+  hideAdd?: boolean;
   ids: string[];
   urls: Record<string, string>;
   /** Full Editor only: replace a picture / open a big preview */
@@ -353,6 +415,7 @@ interface ImageStripProps {
 /** Picture upload row. Minimum = add / remove. Full Editor = also replace + big preview */
 const ImageStrip: React.FC<ImageStripProps> = ({
   title,
+  hideAdd = false,
   ids,
   urls,
   fullFeatures,
@@ -363,19 +426,24 @@ const ImageStrip: React.FC<ImageStripProps> = ({
   onOpenViewer,
   addAriaLabel,
 }) => (
-  <div className="pt-2.5 border-t border-[#F2F4F8] space-y-2.5">
-    <div className="flex items-center justify-between">
-      <span className="text-xs font-semibold text-[#1B1F2A]">{title}</span>
-      <button
-        type="button"
-        aria-label={addAriaLabel}
-        onClick={onAdd}
-        className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#2A3BB0] text-xs font-semibold flex items-center gap-1.5 transition-colors"
-      >
-        <ImageIcon className="w-4 h-4 text-[#3B4FD8]" />
-        <span>ছবি যোগ করো</span>
-      </button>
-    </div>
+  <div className="space-y-2">
+    {(!hideAdd || title) && (
+      <div className="flex items-center gap-2">
+        {title && <span className="text-xs font-semibold text-[#1B1F2A]">{title}</span>}
+        {!hideAdd && (
+          <button
+            type="button"
+            aria-label={addAriaLabel}
+            title="ছবি যোগ করুন"
+            onClick={onAdd}
+            style={{ minHeight: 0, height: 36, width: 36 }}
+            className="rounded-lg border border-dashed border-[#3B4FD8] bg-[#EEF2FF] hover:bg-[#E0E7FF] active:bg-[#C7D2FE] text-[#3B4FD8] flex items-center justify-center transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+        )}
+      </div>
+    )}
 
     {ids.length > 0 && (
       <div className={fullFeatures ? 'grid grid-cols-2 gap-2.5' : 'grid grid-cols-3 gap-2.5'}>
@@ -400,6 +468,7 @@ const ImageStrip: React.FC<ImageStripProps> = ({
                   type="button"
                   aria-label="ছবি মুছে ফেলুন"
                   onClick={() => onRemove(imgId)}
+                  style={{ minHeight: 0 }}
                   className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center shadow-md hover:bg-red-700"
                 >
                   <X className="w-3.5 h-3.5" />
@@ -1326,9 +1395,9 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
             </section>
           )}
 
-          {/* Section 2: Stimulus (উদ্দীপক) — text, eye preview, rating, images, board */}
-          <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3">
-            <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#F2F4F8]">
+          {/* Section 2: Stimulus (উদ্দীপক) — controls row, board chips, text, picture "+", reference */}
+          <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
               <span className="flex items-center gap-1.5 text-xs font-bold text-[#2A3BB0] min-w-0">
                 <HelpCircle className="w-4 h-4 text-[#3B4FD8] shrink-0" />
                 <span className="truncate">উদ্দীপক *</span>
@@ -1352,6 +1421,12 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
               </div>
             </div>
 
+            {/* Boards this stimulus came in — the line right under board / eye / rating */}
+            <BoardChips
+              chips={stimulusBoards}
+              onRemove={(board, year) => removeBoardYear({ kind: 'stimulus' }, board, year)}
+            />
+
             <LatexEditor
               value={stimulusText}
               onChange={(val) => {
@@ -1371,16 +1446,10 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
               </p>
             )}
 
-            <BoardChips
-              chips={stimulusBoards}
-              onRemove={(board, year) => removeBoardYear({ kind: 'stimulus' }, board, year)}
-            />
-
             {stimulusPreviewOpen && <LivePreview text={stimulusText} />}
 
-            {/* Stimulus pictures */}
+            {/* Stimulus pictures: just a "+" button (no text) */}
             <ImageStrip
-              title="উদ্দীপকের ছবি"
               ids={stimulusImageIds}
               urls={stimulusImageUrls}
               fullFeatures={isFull}
@@ -1399,30 +1468,21 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
               onChange={handleUploadStimulusImages}
               className="hidden"
             />
-          </section>
 
-          {/* Reference (Full Editor only) */}
-          {isFull && (
-            <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-2.5">
-              <div className="flex items-center gap-2 pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
-                <BookMarked className="w-4 h-4 text-[#3B4FD8]" />
-                <span>রেফারেন্স (প্রশ্নটি কোথা থেকে সংগ্রহ)</span>
-              </div>
-              <input
-                type="text"
-                value={reference}
-                onChange={(e) => {
-                  setIsDirty(true);
-                  setReference(e.target.value);
-                }}
-                placeholder="যেমন: মেরি জি প্রশ্ন ব্যাংক"
-                className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
-              />
-              <p className="text-[0.6875rem] text-[#64748B]">
-                প্রশ্ন কার্ডের থ্রি ডট মেনুর "রেফারেন্স দেখুন" অপশনে এটি দেখা যাবে।
-              </p>
-            </section>
-          )}
+            {/* Reference: only the small box, its placeholder says what it is */}
+            <input
+              type="text"
+              aria-label="রেফারেন্স"
+              value={reference}
+              onChange={(e) => {
+                setIsDirty(true);
+                setReference(e.target.value);
+              }}
+              placeholder="যেমন: মেরি জি প্রশ্ন ব্যাংক"
+              style={{ height: 36 }}
+              className="w-full px-3 rounded-lg border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+            />
+          </section>
 
           {/* Section 3: Question Blocks (গ, ঘ …) */}
           <section className="space-y-4">
@@ -1446,9 +1506,35 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
             )}
 
             {questionBlocks.map((block, index) => {
-              const solInputId = `sol-file-${block.tempId}`;
               const qError = errors.questions?.[block.tempId];
               const solPreviewOpen = !!solutionPreviewOpen[block.tempId];
+
+              // board picker + eye (solution live preview) + rating of this question (গ / ঘ …)
+              const questionControls = (
+                <div className="flex items-center gap-1 shrink-0">
+                  <BoardSelect
+                    ariaLabel={`প্রশ্ন (${block.type}) কোন বোর্ডে এসেছে`}
+                    options={allBoardOptions}
+                    onPick={(board) => setYearPicker({ target: { kind: 'question', index }, board })}
+                    onAddBoard={() => setShowAddBoard(true)}
+                  />
+                  <EyeToggle
+                    open={solPreviewOpen}
+                    onClick={() => setSolutionPreviewOpen((prev) => ({ ...prev, [block.tempId]: !solPreviewOpen }))}
+                  />
+                  <RatingSelect
+                    value={block.rating || 3}
+                    ariaLabel={`প্রশ্ন (${block.type}) এর রেটিং`}
+                    onChange={(v) => updateQuestionBlock(index, 'rating', v)}
+                  />
+                </div>
+              );
+              const blockBoardChips = (
+                <BoardChips
+                  chips={block.usedInBoards || []}
+                  onRemove={(board, year) => removeBoardYear({ kind: 'question', index }, board, year)}
+                />
+              );
 
               return (
                 <div
@@ -1488,13 +1574,17 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                         </div>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2">
-                        <span className="min-h-[32px] min-w-[32px] px-3 rounded-lg bg-[#3B4FD8] text-white text-xs font-bold flex items-center justify-center">
-                          {block.type}
-                        </span>
-                        <span className="text-[0.6875rem] font-semibold text-[#64748B]">
-                          {toBn(block.marks)} নম্বর
-                        </span>
+                      <div className="flex items-center justify-between gap-2 w-full">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="min-h-[32px] min-w-[32px] px-3 rounded-lg bg-[#3B4FD8] text-white text-xs font-bold flex items-center justify-center">
+                            {block.type}
+                          </span>
+                          <span className="text-[0.6875rem] font-semibold text-[#64748B] whitespace-nowrap">
+                            {toBn(block.marks)} নম্বর
+                          </span>
+                        </div>
+                        {/* board / eye (solution preview) / rating — on the same line as গ / ঘ */}
+                        {questionControls}
                       </div>
                     )}
 
@@ -1532,23 +1622,19 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                     )}
                   </div>
 
-                  {/* Question Text (no live preview here) */}
-                  <div className="space-y-1">
+                  {/* Question text. Minimum: no title, the controls sit in the গ / ঘ row above.
+                      Full Editor: "প্রশ্ন (গ)" title with board / eye / rating beside it, chips on the next line. */}
+                  <div className="space-y-1.5">
+                    {!isFull && blockBoardChips}
                     <LatexEditor
-                      label={`প্রশ্ন (${block.type}) *`}
+                      label={isFull ? `প্রশ্ন (${block.type}) *` : undefined}
                       value={block.questionText}
                       onChange={(val) => updateQuestionBlock(index, 'questionText', val)}
                       rows={isFull ? 3 : 2}
                       showToolbar={isFull}
                       showHint={isFull}
-                      headerRight={
-                        <BoardSelect
-                          ariaLabel={`প্রশ্ন (${block.type}) কোন বোর্ডে এসেছে`}
-                          options={allBoardOptions}
-                          onPick={(board) => setYearPicker({ target: { kind: 'question', index }, board })}
-                          onAddBoard={() => setShowAddBoard(true)}
-                        />
-                      }
+                      headerRight={isFull ? questionControls : undefined}
+                      belowHeader={isFull ? blockBoardChips : undefined}
                       showPreview={false}
                       placeholder="প্রশ্নের মূল বক্তব্য লিখুন..."
                     />
@@ -1558,30 +1644,11 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                         <span>{qError}</span>
                       </p>
                     )}
-                    <BoardChips
-                      chips={block.usedInBoards || []}
-                      onRemove={(board, year) => removeBoardYear({ kind: 'question', index }, board, year)}
-                    />
                   </div>
 
-                  {/* Solution: label + eye + rating */}
-                  <div className="space-y-2.5 pt-2.5 border-t border-[#F2F4F8]">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-[#2A3BB0]">সমাধান</span>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <EyeToggle
-                          open={solPreviewOpen}
-                          onClick={() =>
-                            setSolutionPreviewOpen((prev) => ({ ...prev, [block.tempId]: !solPreviewOpen }))
-                          }
-                        />
-                        <RatingSelect
-                          value={block.rating || 3}
-                          ariaLabel={`প্রশ্ন (${block.type}) এর রেটিং`}
-                          onChange={(v) => updateQuestionBlock(index, 'rating', v)}
-                        />
-                      </div>
-                    </div>
+                  {/* Solution (eye + rating moved up beside গ / ঘ) */}
+                  <div className="space-y-2 pt-2.5 border-t border-[#F2F4F8]">
+                    <span className="block text-xs font-bold text-[#2A3BB0]">সমাধান</span>
 
                     <LatexEditor
                       value={block.solutionText}
@@ -1595,27 +1662,21 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                     {solPreviewOpen && <LivePreview text={block.solutionText} />}
                   </div>
 
-                  {/* Solution pictures */}
-                  <ImageStrip
-                    title="সমাধানের ছবি"
-                    ids={block.solutionImageIds || []}
-                    urls={solutionImageUrls}
-                    fullFeatures={isFull}
-                    addAriaLabel="সমাধানের ছবি যোগ করুন"
-                    onAdd={() => document.getElementById(solInputId)?.click()}
-                    onRemove={(id) => handleRemoveSolutionImage(index, id)}
-                    onReplace={(id) => startReplace({ kind: 'solution', blockIndex: index, imageId: id })}
-                    onExport={(id) => handleExportImage(id, solutionImageUrls)}
-                    onOpenViewer={(i) => openViewer(block.solutionImageIds || [], solutionImageUrls, i)}
-                  />
-                  <input
-                    id={solInputId}
-                    type="file"
-                    multiple
-                    accept="image/*"
-                    onChange={(e) => handleUploadSolutionImages(index, e)}
-                    className="hidden"
-                  />
+                  {/* গ / ঘ: no option to add pictures. Pictures saved earlier stay visible so they can still be removed. */}
+                  {(block.solutionImageIds || []).length > 0 && (
+                    <ImageStrip
+                      hideAdd
+                      ids={block.solutionImageIds || []}
+                      urls={solutionImageUrls}
+                      fullFeatures={isFull}
+                      addAriaLabel="সমাধানের ছবি যোগ করুন"
+                      onAdd={() => {}}
+                      onRemove={(id) => handleRemoveSolutionImage(index, id)}
+                      onReplace={(id) => startReplace({ kind: 'solution', blockIndex: index, imageId: id })}
+                      onExport={(id) => handleExportImage(id, solutionImageUrls)}
+                      onOpenViewer={(i) => openViewer(block.solutionImageIds || [], solutionImageUrls, i)}
+                    />
+                  )}
 
                   {/* Short Answer — Full Editor only */}
                   {isFull && (

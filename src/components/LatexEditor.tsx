@@ -18,6 +18,8 @@ export interface LatexEditorProps {
   showHint?: boolean;
   /** extra control shown at the right end of the label row (e.g. the board picker) */
   headerRight?: React.ReactNode;
+  /** shown on its own line right under the label row (e.g. the small board chips) */
+  belowHeader?: React.ReactNode;
 }
 
 interface InsertSpec {
@@ -38,8 +40,41 @@ export const LatexEditor: React.FC<LatexEditorProps> = ({
   showToolbar = true,
   showHint = true,
   headerRight,
+  belowHeader,
 }) => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // ---- drag-to-resize handle (a visible grip in the bottom-right corner) ----
+  // The browser's own resize corner is hidden under the scrollbar on phones, so we draw our own.
+  const [boxHeight, setBoxHeight] = useState<number | null>(null);
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  const handleGripDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = { startY: e.clientY, startH: ta.offsetHeight };
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
+  const handleGripMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d) return;
+    e.preventDefault();
+    setBoxHeight(Math.max(52, Math.min(1200, Math.round(d.startH + (e.clientY - d.startY)))));
+  };
+  const handleGripUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragRef.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  };
   const [showGreekMenu, setShowGreekMenu] = useState(false);
   const greekMenuRef = useRef<HTMLDivElement>(null);
 
@@ -139,6 +174,7 @@ export const LatexEditor: React.FC<LatexEditorProps> = ({
               showHint && hintNode
             )}
           </div>
+          {belowHeader}
           {headerRight && showHint && <div className="text-right">{hintNode}</div>}
         </div>
       )}
@@ -272,15 +308,33 @@ export const LatexEditor: React.FC<LatexEditorProps> = ({
         </div>
         )}
 
-        {/* Textarea */}
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          rows={rows}
-          placeholder={placeholder}
-          className="w-full min-h-[3.25rem] p-3.5 text-sm text-[#1B1F2A] bg-white border-0 outline-none resize-y font-sans leading-relaxed block"
-        />
+        {/* Textarea + custom resize grip */}
+        <div className="relative">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            rows={rows}
+            placeholder={placeholder}
+            style={boxHeight ? { height: boxHeight } : undefined}
+            className="w-full min-h-[3.25rem] p-3.5 pb-6 text-sm text-[#1B1F2A] bg-white border-0 outline-none resize-none font-sans leading-relaxed block"
+          />
+          <div
+            role="separator"
+            aria-label="টেনে ঘরটি ছোট-বড় করুন"
+            title="টেনে ছোট-বড় করুন"
+            onPointerDown={handleGripDown}
+            onPointerMove={handleGripMove}
+            onPointerUp={handleGripUp}
+            onPointerCancel={handleGripUp}
+            style={{ touchAction: 'none' }}
+            className="absolute right-0 bottom-0 z-10 w-9 h-9 flex items-end justify-end p-1.5 cursor-ns-resize select-none"
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" className="rounded-br-md bg-white/80" aria-hidden="true">
+              <path d="M13 5 5 13M13 9 9 13M13 1 1 13" stroke="#94A3B8" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+            </svg>
+          </div>
+        </div>
       </div>
 
       {/* Live KaTeX Preview Section */}
