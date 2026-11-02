@@ -1,7 +1,7 @@
 import React from 'react';
-import { PlusCircle, FolderHeart, User } from 'lucide-react';
+import { PlusCircle, Layers, BookOpen, SlidersHorizontal, User } from 'lucide-react';
 
-export type TabType = 'create' | 'collection' | 'profile';
+export type TabType = 'create' | 'typeCq' | 'chapterCq' | 'filter' | 'profile';
 
 interface BottomNavProps {
   activeTab: TabType;
@@ -23,10 +23,22 @@ const navItems: NavItemConfig[] = [
     ariaLabel: 'তৈরি ট্যাব খুলুন',
   },
   {
-    key: 'collection',
-    label: 'Collection',
-    icon: FolderHeart,
-    ariaLabel: 'কালেকশন ট্যাব খুলুন',
+    key: 'typeCq',
+    label: 'Type CQ',
+    icon: Layers,
+    ariaLabel: 'টাইপ সিকিউ ট্যাব খুলুন',
+  },
+  {
+    key: 'chapterCq',
+    label: 'Chapter CQ',
+    icon: BookOpen,
+    ariaLabel: 'চ্যাপ্টার সিকিউ ট্যাব খুলুন',
+  },
+  {
+    key: 'filter',
+    label: 'Filter',
+    icon: SlidersHorizontal,
+    ariaLabel: 'ফিল্টার ট্যাব খুলুন',
   },
   {
     key: 'profile',
@@ -41,6 +53,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onTabChange }) 
     <nav
       aria-label="নিচের নেভিগেশন বার"
       className="fixed bottom-0 left-0 right-0 z-40 bg-white dark:bg-slate-900 border-t border-[#D5D9E2] dark:border-slate-800 shadow-[0_-2px_10px_rgba(0,0,0,0.04)]"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}
     >
       <div className="max-w-[390px] mx-auto flex items-center justify-around h-16 px-2">
         {navItems.map((item) => {
@@ -61,13 +74,13 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onTabChange }) 
               }`}
             >
               <div
-                className={`w-10 h-7 flex items-center justify-center rounded-full transition-transform ${
+                className={`w-9 h-7 flex items-center justify-center rounded-full transition-transform ${
                   isActive ? 'bg-[#EEF2FF] dark:bg-indigo-950/80 scale-105' : ''
                 }`}
               >
                 <IconComponent className={`w-5 h-5 ${isActive ? 'stroke-[2.5]' : 'stroke-[1.8]'}`} />
               </div>
-              <span className="text-[12px] leading-none tracking-tight">{item.label}</span>
+              <span className="text-[0.68rem] leading-none tracking-tight whitespace-nowrap">{item.label}</span>
             </button>
           );
         })}

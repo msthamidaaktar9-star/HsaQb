@@ -5,17 +5,35 @@ import { BottomNav } from './components/BottomNav';
 import { CreateScreen } from './screens/CreateScreen';
 import { CollectionScreen } from './screens/CollectionScreen';
 import { ProfileScreen } from './screens/ProfileScreen';
+import { FilterScreen } from './screens/FilterScreen';
 import { getAppSettings, applySettingsToDOM } from './utils/settings';
+import { StoragePermissionDialog } from './components/StoragePermissionDialog';
+import { PdfSavedDialog } from './components/PdfSavedDialog';
+import { AutoBackupRunner } from './components/AutoBackupRunner';
+
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { Capacitor } from '@capacitor/core';
 
 const MainLayout: React.FC = () => {
   const { activeTab, switchTab } = useNavigation();
 
   useEffect(() => {
-    const initSettings = async () => {
+    const initApp = async () => {
       const settings = await getAppSettings();
       applySettingsToDOM(settings);
+
+      // Configure Capacitor StatusBar on native platform
+      if (Capacitor.isNativePlatform()) {
+        try {
+          await StatusBar.setOverlaysWebView({ overlay: false });
+          await StatusBar.setBackgroundColor({ color: '#3B4FD8' });
+          await StatusBar.setStyle({ style: Style.Dark });
+        } catch (e) {
+          console.warn('Failed to configure StatusBar:', e);
+        }
+      }
     };
-    initSettings();
+    initApp();
   }, []);
 
   return (
@@ -26,7 +44,9 @@ const MainLayout: React.FC = () => {
         {/* Dynamic Screen View */}
         <div className="flex-1 flex flex-col overflow-y-auto overflow-x-hidden">
           {activeTab === 'create' && <CreateScreen />}
-          {activeTab === 'collection' && <CollectionScreen />}
+          {activeTab === 'typeCq' && <CollectionScreen key="type" scope="type" />}
+          {activeTab === 'chapterCq' && <CollectionScreen key="chapter" scope="chapter" />}
+          {activeTab === 'filter' && <FilterScreen />}
           {activeTab === 'profile' && <ProfileScreen />}
         </div>
 
@@ -42,6 +62,9 @@ export default function App() {
     <ToastProvider>
       <NavigationProvider>
         <MainLayout />
+        <StoragePermissionDialog />
+        <PdfSavedDialog />
+        <AutoBackupRunner />
       </NavigationProvider>
     </ToastProvider>
   );

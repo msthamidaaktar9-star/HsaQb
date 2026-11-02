@@ -1,25 +1,8 @@
-# Dependencies
 node_modules/
-
-# Production builds
-dist/
 build/
-
-# Capacitor & Android builds
-android/app/build/
-android/.gradle/
-android/build/
-*.apk
-*.aab
-
-# Logs & temp
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.DS_Store
+dist/
 coverage/
-
-# Environment variables
+.DS_Store
+*.log
 .env*
 !.env.example

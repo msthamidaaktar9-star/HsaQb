@@ -21,17 +21,21 @@ import { exportJsonFile } from '../utils/fileExport';
 import { useToast } from './Toast';
 import { ConfirmDialog } from './ConfirmDialog';
 import { toBn } from '../utils/toBn';
+import type { CqScope } from '../db/db';
 
 export interface ImportCollectionModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  /** which collection to import into (default: Type CQ) */
+  scope?: CqScope;
 }
 
 export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
+  scope = 'type' as CqScope,
 }) => {
   const { showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -65,7 +69,7 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
 
     try {
       const text = await file.text();
-      const res = await parseAndValidateCollectionJson(text);
+      const res = await parseAndValidateCollectionJson(text, scope);
       setPreview(res);
     } catch (err: any) {
       setPreview({
@@ -97,8 +101,8 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
   // Download Sample JSON
   const handleDownloadSample = async () => {
     try {
-      const sampleContent = getSampleCollectionJson();
-      const success = await exportJsonFile('qb-collection-sample.json', sampleContent);
+      const sampleContent = getSampleCollectionJson(scope);
+      const success = await exportJsonFile(scope === 'chapter' ? 'qb-chapter-cq-sample.json' : 'qb-type-cq-sample.json', sampleContent);
       if (success) {
         showToast('নমুনা JSON ফাইল ডাউনলোড হয়েছে');
       } else {
@@ -130,7 +134,7 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
       const stats = await executeCollectionImport(preview.rawPayload, {
         mode: importMode,
         manualFiles: manualImages,
-      });
+      }, scope);
 
       showToast(
         `সফলভাবে ${toBn(stats.subjects)}টি বিষয় ও ${toBn(stats.questions)}টি প্রশ্ন ইমপোর্ট হয়েছে`
@@ -166,7 +170,7 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
           <div className="flex items-center gap-2">
             <Upload className="w-5 h-5 text-white" />
             <h2 id="import-modal-title" className="text-base font-bold text-white">
-              প্রশ্ন কালেকশন ইমপোর্ট
+              {scope === 'chapter' ? 'Chapter CQ ইমপোর্ট' : 'Type CQ ইমপোর্ট'}
             </h2>
           </div>
           <button
@@ -213,7 +217,7 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
             />
 
             {selectedFile && (
-              <p className="text-[11px] text-[#64748B] dark:text-slate-400 px-1 truncate">
+              <p className="text-[0.6875rem] text-[#64748B] dark:text-slate-400 px-1 truncate">
                 বাছাইকৃত ফাইল: <span className="font-semibold text-[#1B1F2A] dark:text-slate-200">{selectedFile.name}</span>
               </p>
             )}
@@ -250,14 +254,14 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
 
                 <div className="grid grid-cols-2 gap-2 text-xs text-[#1B1F2A] dark:text-slate-200">
                   <div className="bg-white dark:bg-slate-800/80 p-2.5 rounded-xl border border-[#D5D9E2] dark:border-slate-700">
-                    <span className="text-[11px] text-[#64748B] dark:text-slate-400 block">বিষয় / অধ্যায় / টপিক</span>
+                    <span className="text-[0.6875rem] text-[#64748B] dark:text-slate-400 block">বিষয় / অধ্যায় / টপিক</span>
                     <span className="font-bold text-[#2A3BB0] dark:text-indigo-300">
                       {toBn(preview.subjectsCount)}টি · {toBn(preview.chaptersCount)}টি · {toBn(preview.topicsCount)}টি
                     </span>
                   </div>
 
                   <div className="bg-white dark:bg-slate-800/80 p-2.5 rounded-xl border border-[#D5D9E2] dark:border-slate-700">
-                    <span className="text-[11px] text-[#64748B] dark:text-slate-400 block">মোট প্রশ্ন</span>
+                    <span className="text-[0.6875rem] text-[#64748B] dark:text-slate-400 block">মোট প্রশ্ন</span>
                     <span className="font-bold text-[#2A3BB0] dark:text-indigo-300">
                       {toBn(preview.totalQuestions)}টি
                     </span>
@@ -302,7 +306,7 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
                       <div className="text-xs font-bold text-[#1B1F2A] dark:text-slate-100">
                         বিদ্যমান ডাটার সাথে যোগ করো
                       </div>
-                      <div className="text-[11px] text-[#64748B] dark:text-slate-400 leading-tight">
+                      <div className="text-[0.6875rem] text-[#64748B] dark:text-slate-400 leading-tight">
                         নতুন প্রশ্নগুলো যুক্ত হবে এবং ডুপ্লিকেটগুলো আপডেট হবে। বর্তমান অন্য কোনো প্রশ্ন মুছবে না।
                       </div>
                     </div>
@@ -327,7 +331,7 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
                       <div className="text-xs font-bold text-red-600 dark:text-red-400">
                         সব বদলে দাও (প্রতিস্থাপন)
                       </div>
-                      <div className="text-[11px] text-[#64748B] dark:text-slate-400 leading-tight">
+                      <div className="text-[0.6875rem] text-[#64748B] dark:text-slate-400 leading-tight">
                         বর্তমান সকল বিষয়, অধ্যায় ও প্রশ্ন মুছে দিয়ে এই ফাইলের ডাটা দিয়ে প্রতিস্থাপন করবে।
                       </div>
                     </div>
@@ -360,18 +364,18 @@ export const ImportCollectionModal: React.FC<ImportCollectionModalProps> = ({
                     />
                   </div>
 
-                  <p className="text-[11px] text-amber-800 dark:text-amber-300 leading-tight">
+                  <p className="text-[0.6875rem] text-amber-800 dark:text-amber-300 leading-tight">
                     ফাইলে {toBn(preview.missingImageFiles.length)}টি ছবির নাম পাওয়া গেছে কিন্তু ছবি অন্তর্ভুক্ত নেই। ফোল্ডার থেকে ছবিগুলো নির্বাচন করলে নাম মিলিয়ে যুক্ত হবে।
                   </p>
 
                   {manualImages.length > 0 && (
-                    <div className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400">
+                    <div className="text-[0.6875rem] font-semibold text-emerald-700 dark:text-emerald-400">
                       ✓ {toBn(manualImages.length)}টি ছবি নির্বাচিত হয়েছে
                     </div>
                   )}
 
                   {/* List of missing file names */}
-                  <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-900/70 border border-amber-200 dark:border-amber-800/50 max-h-24 overflow-y-auto space-y-0.5 font-mono text-[10px]">
+                  <div className="p-2 rounded-xl bg-white/70 dark:bg-slate-900/70 border border-amber-200 dark:border-amber-800/50 max-h-24 overflow-y-auto space-y-0.5 font-mono text-[0.625rem]">
                     {preview.missingImageFiles.map((fn, idx) => (
                       <div key={idx} className="truncate">
                         • {fn}

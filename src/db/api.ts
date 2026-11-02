@@ -1,15 +1,23 @@
 import {
   db,
+  db as typeDatabase,
+  chapterDb,
+  type QbDatabase,
+  type CqScope,
   type Subject,
   type Chapter,
   type Topic,
   type Stimulus,
   type Question,
+  type Category,
   type Paper,
   type DbImage,
   type QuestionType,
   type BoardUsage,
 } from './db';
+
+import { toBn, toEn } from '../utils/toBn';
+
 
 export type {
   Subject,
@@ -17,11 +25,13 @@ export type {
   Topic,
   Stimulus,
   Question,
+  Category,
   Paper,
   DbImage,
   QuestionType,
   BoardUsage,
 };
+
 
 /**
  * Generate a unique ID (crypto.randomUUID with fallback)
@@ -32,6 +42,7 @@ export function generateId(): string {
   }
   return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 9);
 }
+
 
 /**
  * Rating label mapping (১=সহজ, ২=মোটামুটি, ৩=মাঝারি, ৪=ভালো, ৫=চ্যালেঞ্জিং)
@@ -44,9 +55,11 @@ export const RATING_LABELS: Record<number, string> = {
   5: 'চ্যালেঞ্জিং',
 };
 
+
 export function getRatingLabel(rating: number): string {
   return RATING_LABELS[rating] || 'মাঝারি';
 }
+
 
 /**
  * Rating stars string (e.g. ★★★★☆ ভালো)
@@ -63,27 +76,132 @@ export function getRatingStarsText(rating: number): string {
  * 1. Read APIs
  * ----------------------------------------------------------- */
 
-export async function getSubjects(): Promise<Subject[]> {
-  const list = await db.subjects.toArray();
-  return list.sort((a, b) => a.order - b.order);
-}
-
-export async function getChapters(subjectId: string): Promise<Chapter[]> {
-  const list = await db.chapters.where('subjectId').equals(subjectId).toArray();
-  return list.sort((a, b) => a.order - b.order);
-}
-
-export async function getTopics(chapterId: string): Promise<Topic[]> {
-  const list = await db.topics.where('chapterId').equals(chapterId).toArray();
-  return list.sort((a, b) => a.order - b.order);
-}
 
 export interface StimulusWithQuestions {
   stimulus?: Stimulus;
   questions: Question[];
 }
 
-export async function getQuestionsByTopicGrouped(topicId: string): Promise<StimulusWithQuestions[]> {
+
+export interface HierarchyStats {
+  subjectStats: Record<string, { total: number; selected: number }>;
+  chapterStats: Record<string, { total: number; selected: number }>;
+  topicStats: Record<string, { total: number; selected: number }>;
+}
+
+
+const META_SELECTED_KEY = 'selectedQuestionIds';
+
+
+const META_CLIPBOARD_KEY = 'clipboard';
+
+const META_GROUP_CLIPBOARD_KEY = 'group_clipboard';
+
+
+export interface GroupClipboardData {
+  mode: 'copy' | 'cut';
+  stimulus?: Stimulus;
+  questions: Question[];
+  sourceTopicId: string;
+}
+
+
+export interface QuestionBlockInput {
+  id?: string;
+  type: QuestionType;
+  marks: number;
+  questionText: string;
+  solutionText: string;
+  solutionImageIds: string[];
+  answerText?: string;
+  rating: number;
+  usedInBoards: BoardUsage[];
+}
+
+
+export interface SaveQuestionGroupPayload {
+  stimulusId?: string;
+  topicId: string;
+  stimulusText: string;
+  stimulusImageIds: string[];
+  boardTag?: string;
+  stimulusUsedInBoards?: BoardUsage[];
+  stimulusRating?: number;
+  reference?: string;
+  questions: QuestionBlockInput[];
+  deletedQuestionIds?: string[];
+}
+
+
+export interface QuestionGroupEditData {
+  stimulus?: Stimulus;
+  questions: Question[];
+  topicId: string;
+  chapterId?: string;
+  subjectId?: string;
+}
+
+
+export interface QuestionPaperUsage {
+  paperId: string;
+  shortName: string;
+  title: string;
+  count: number;
+}
+
+
+/**
+ * Paper tag = category name + running number, e.g. "উইকলি মডেল টেস্ট-১".
+ * The number continues after the highest number already used inside that category.
+ */
+function paperLabelNumber(shortName: string | undefined, categoryName: string): number | null {
+  const prefix = `${categoryName.trim()}-`;
+  const name = (shortName || '').trim();
+  if (!name.startsWith(prefix)) return null;
+  const rest = toEn(name.slice(prefix.length)).trim();
+  return /^\d+$/.test(rest) ? parseInt(rest, 10) : null;
+}
+
+
+export type CategoryClipboard =
+  | { type: 'category'; id: string; name: string }
+  | { type: 'paper'; id: string; name: string };
+
+
+const META_CATEGORY_CLIPBOARD_KEY = 'category_clipboard';
+
+
+/* -------------------------------------------------------------
+ * API factory — one instance per database (Type CQ / Chapter CQ)
+ * ----------------------------------------------------------- */
+
+/** The permanent category that receives every paper without (or after losing) a category */
+export const UNCATEGORIZED_NAME = 'অশ্রেণিবদ্ধ';
+
+export function isUncategorizedCategory(cat?: { name: string } | null): boolean {
+  return Boolean(cat) && cat!.name.trim() === UNCATEGORIZED_NAME;
+}
+
+export function createQbApi(db: QbDatabase) {
+async function getSubjects(): Promise<Subject[]> {
+  const list = await db.subjects.toArray();
+  return list.sort((a, b) => a.order - b.order);
+}
+
+
+async function getChapters(subjectId: string): Promise<Chapter[]> {
+  const list = await db.chapters.where('subjectId').equals(subjectId).toArray();
+  return list.sort((a, b) => a.order - b.order);
+}
+
+
+async function getTopics(chapterId: string): Promise<Topic[]> {
+  const list = await db.topics.where('chapterId').equals(chapterId).toArray();
+  return list.sort((a, b) => a.order - b.order);
+}
+
+
+async function getQuestionsByTopicGrouped(topicId: string): Promise<StimulusWithQuestions[]> {
   const allQuestions = await db.questions.where('topicId').equals(topicId).toArray();
   allQuestions.sort((a, b) => a.order - b.order);
 
@@ -124,16 +242,19 @@ export async function getQuestionsByTopicGrouped(topicId: string): Promise<Stimu
   return groups;
 }
 
-export async function getAllQuestions(): Promise<Question[]> {
+
+async function getAllQuestions(): Promise<Question[]> {
   const list = await db.questions.toArray();
   return list.sort((a, b) => a.order - b.order);
 }
 
-export async function getStimulus(id: string): Promise<Stimulus | undefined> {
+
+async function getStimulus(id: string): Promise<Stimulus | undefined> {
   return await db.stimuli.get(id);
 }
 
-export async function getQuestion(id: string): Promise<Question | undefined> {
+
+async function getQuestion(id: string): Promise<Question | undefined> {
   return await db.questions.get(id);
 }
 
@@ -141,13 +262,8 @@ export async function getQuestion(id: string): Promise<Question | undefined> {
  * 2. Hierarchy Stats (Total Questions & Selected count per node)
  * ----------------------------------------------------------- */
 
-export interface HierarchyStats {
-  subjectStats: Record<string, { total: number; selected: number }>;
-  chapterStats: Record<string, { total: number; selected: number }>;
-  topicStats: Record<string, { total: number; selected: number }>;
-}
 
-export async function getHierarchyStats(): Promise<HierarchyStats> {
+async function getHierarchyStats(): Promise<HierarchyStats> {
   const [allQuestions, allTopics, allChapters, selectedIds] = await Promise.all([
     db.questions.toArray(),
     db.topics.toArray(),
@@ -208,7 +324,8 @@ export async function getHierarchyStats(): Promise<HierarchyStats> {
  * 3. Write APIs (Add, Update, Delete with Cascade, Reorder)
  * ----------------------------------------------------------- */
 
-export async function addSubject(name: string): Promise<Subject> {
+
+async function addSubject(name: string): Promise<Subject> {
   const current = await db.subjects.toArray();
   const maxOrder = current.reduce((max, s) => Math.max(max, s.order || 0), 0);
   const subject: Subject = {
@@ -220,11 +337,13 @@ export async function addSubject(name: string): Promise<Subject> {
   return subject;
 }
 
-export async function updateSubject(id: string, name: string): Promise<void> {
+
+async function updateSubject(id: string, name: string): Promise<void> {
   await db.subjects.update(id, { name: name.trim() });
 }
 
-export async function addChapter(subjectId: string, name: string): Promise<Chapter> {
+
+async function addChapter(subjectId: string, name: string): Promise<Chapter> {
   const current = await db.chapters.where('subjectId').equals(subjectId).toArray();
   const maxOrder = current.reduce((max, c) => Math.max(max, c.order || 0), 0);
   const chapter: Chapter = {
@@ -237,11 +356,13 @@ export async function addChapter(subjectId: string, name: string): Promise<Chapt
   return chapter;
 }
 
-export async function updateChapter(id: string, name: string): Promise<void> {
+
+async function updateChapter(id: string, name: string): Promise<void> {
   await db.chapters.update(id, { name: name.trim() });
 }
 
-export async function addTopic(chapterId: string, name: string): Promise<Topic> {
+
+async function addTopic(chapterId: string, name: string): Promise<Topic> {
   const current = await db.topics.where('chapterId').equals(chapterId).toArray();
   const maxOrder = current.reduce((max, t) => Math.max(max, t.order || 0), 0);
   const topic: Topic = {
@@ -254,11 +375,13 @@ export async function addTopic(chapterId: string, name: string): Promise<Topic> 
   return topic;
 }
 
-export async function updateTopic(id: string, name: string): Promise<void> {
+
+async function updateTopic(id: string, name: string): Promise<void> {
   await db.topics.update(id, { name: name.trim() });
 }
 
-export async function addStimulus(data: Omit<Stimulus, 'id'>): Promise<Stimulus> {
+
+async function addStimulus(data: Omit<Stimulus, 'id'>): Promise<Stimulus> {
   const stimulus: Stimulus = {
     ...data,
     id: generateId(),
@@ -267,11 +390,13 @@ export async function addStimulus(data: Omit<Stimulus, 'id'>): Promise<Stimulus>
   return stimulus;
 }
 
-export async function updateStimulus(id: string, data: Partial<Omit<Stimulus, 'id'>>): Promise<void> {
+
+async function updateStimulus(id: string, data: Partial<Omit<Stimulus, 'id'>>): Promise<void> {
   await db.stimuli.update(id, data);
 }
 
-export async function addQuestion(data: Omit<Question, 'id'>): Promise<Question> {
+
+async function addQuestion(data: Omit<Question, 'id'>): Promise<Question> {
   const current = await db.questions.where('topicId').equals(data.topicId).toArray();
   const maxOrder = current.reduce((max, q) => Math.max(max, q.order || 0), 0);
   const question: Question = {
@@ -283,9 +408,11 @@ export async function addQuestion(data: Omit<Question, 'id'>): Promise<Question>
   return question;
 }
 
-export async function updateQuestion(id: string, data: Partial<Omit<Question, 'id'>>): Promise<void> {
+
+async function updateQuestion(id: string, data: Partial<Omit<Question, 'id'>>): Promise<void> {
   await db.questions.update(id, data);
 }
+
 
 /**
  * Cascading deletes: Deletes target and all nested children plus image blobs
@@ -296,7 +423,8 @@ async function deleteImages(imageIds: string[]): Promise<void> {
   }
 }
 
-export async function deleteQuestion(questionId: string): Promise<void> {
+
+async function deleteQuestion(questionId: string): Promise<void> {
   const q = await db.questions.get(questionId);
   if (!q) return;
 
@@ -323,6 +451,7 @@ export async function deleteQuestion(questionId: string): Promise<void> {
   }
 }
 
+
 async function deleteStimulusOnly(stimulusId: string): Promise<void> {
   const stim = await db.stimuli.get(stimulusId);
   if (stim) {
@@ -333,7 +462,8 @@ async function deleteStimulusOnly(stimulusId: string): Promise<void> {
   }
 }
 
-export async function deleteStimulus(stimulusId: string): Promise<void> {
+
+async function deleteStimulus(stimulusId: string): Promise<void> {
   const questions = await db.questions.where('stimulusId').equals(stimulusId).toArray();
   for (const q of questions) {
     if (q.solutionImageIds) {
@@ -344,7 +474,8 @@ export async function deleteStimulus(stimulusId: string): Promise<void> {
   await deleteStimulusOnly(stimulusId);
 }
 
-export async function deleteTopic(topicId: string): Promise<void> {
+
+async function deleteTopic(topicId: string): Promise<void> {
   const questions = await db.questions.where('topicId').equals(topicId).toArray();
   for (const q of questions) {
     if (q.solutionImageIds) await deleteImages(q.solutionImageIds);
@@ -360,7 +491,8 @@ export async function deleteTopic(topicId: string): Promise<void> {
   await db.topics.delete(topicId);
 }
 
-export async function deleteChapter(chapterId: string): Promise<void> {
+
+async function deleteChapter(chapterId: string): Promise<void> {
   const topics = await db.topics.where('chapterId').equals(chapterId).toArray();
   for (const t of topics) {
     await deleteTopic(t.id);
@@ -368,7 +500,8 @@ export async function deleteChapter(chapterId: string): Promise<void> {
   await db.chapters.delete(chapterId);
 }
 
-export async function deleteSubject(subjectId: string): Promise<void> {
+
+async function deleteSubject(subjectId: string): Promise<void> {
   const chapters = await db.chapters.where('subjectId').equals(subjectId).toArray();
   for (const c of chapters) {
     await deleteChapter(c.id);
@@ -380,7 +513,8 @@ export async function deleteSubject(subjectId: string): Promise<void> {
  * Reordering
  * ----------------------------------------------------------- */
 
-export async function reorderSubjects(orderedIds: string[]): Promise<void> {
+
+async function reorderSubjects(orderedIds: string[]): Promise<void> {
   await db.transaction('rw', db.subjects, async () => {
     for (let i = 0; i < orderedIds.length; i++) {
       await db.subjects.update(orderedIds[i], { order: i + 1 });
@@ -388,7 +522,8 @@ export async function reorderSubjects(orderedIds: string[]): Promise<void> {
   });
 }
 
-export async function reorderChapters(orderedIds: string[]): Promise<void> {
+
+async function reorderChapters(orderedIds: string[]): Promise<void> {
   await db.transaction('rw', db.chapters, async () => {
     for (let i = 0; i < orderedIds.length; i++) {
       await db.chapters.update(orderedIds[i], { order: i + 1 });
@@ -396,7 +531,8 @@ export async function reorderChapters(orderedIds: string[]): Promise<void> {
   });
 }
 
-export async function reorderTopics(orderedIds: string[]): Promise<void> {
+
+async function reorderTopics(orderedIds: string[]): Promise<void> {
   await db.transaction('rw', db.topics, async () => {
     for (let i = 0; i < orderedIds.length; i++) {
       await db.topics.update(orderedIds[i], { order: i + 1 });
@@ -404,7 +540,8 @@ export async function reorderTopics(orderedIds: string[]): Promise<void> {
   });
 }
 
-export async function reorderQuestions(orderedIds: string[]): Promise<void> {
+
+async function reorderQuestions(orderedIds: string[]): Promise<void> {
   await db.transaction('rw', db.questions, async () => {
     for (let i = 0; i < orderedIds.length; i++) {
       await db.questions.update(orderedIds[i], { order: i + 1 });
@@ -416,9 +553,8 @@ export async function reorderQuestions(orderedIds: string[]): Promise<void> {
  * 4. Selection APIs (ordered array in meta table)
  * ----------------------------------------------------------- */
 
-const META_SELECTED_KEY = 'selectedQuestionIds';
 
-export async function getSelectedIds(): Promise<string[]> {
+async function getSelectedIds(): Promise<string[]> {
   const record = await db.meta.get(META_SELECTED_KEY);
   if (!record || !Array.isArray(record.value)) {
     return [];
@@ -426,12 +562,14 @@ export async function getSelectedIds(): Promise<string[]> {
   return record.value as string[];
 }
 
-export async function isQuestionSelected(questionId: string): Promise<boolean> {
+
+async function isQuestionSelected(questionId: string): Promise<boolean> {
   const selected = await getSelectedIds();
   return selected.includes(questionId);
 }
 
-export async function toggleSelected(questionId: string): Promise<string[]> {
+
+async function toggleSelected(questionId: string): Promise<string[]> {
   const current = await getSelectedIds();
   let next: string[];
   if (current.includes(questionId)) {
@@ -443,21 +581,68 @@ export async function toggleSelected(questionId: string): Promise<string[]> {
   return next;
 }
 
-export async function clearSelection(): Promise<void> {
+
+/**
+ * Toggle selection for an entire stimulus group (all its sub-questions)
+ */
+async function toggleStimulusSelect(
+  stimulusId: string | undefined,
+  questionIds: string[]
+): Promise<string[]> {
+  const current = await getSelectedIds();
+  const allSelected = questionIds.length > 0 && questionIds.every((id) => current.includes(id));
+  let next: string[];
+
+  if (allSelected) {
+    // Unselect all questions of this stimulus
+    next = current.filter((id) => !questionIds.includes(id));
+  } else {
+    // Select all questions of this stimulus
+    const toAdd = questionIds.filter((id) => !current.includes(id));
+    next = [...current, ...toAdd];
+  }
+
+  await db.meta.put({ key: META_SELECTED_KEY, value: next });
+  return next;
+}
+
+
+/**
+ * Count unique stimulus groups / questions selected
+ */
+async function getSelectedStimuliCount(selectedIds: string[]): Promise<number> {
+  if (!selectedIds || selectedIds.length === 0) return 0;
+  const questions = await db.questions.where('id').anyOf(selectedIds).toArray();
+  const stimuliSet = new Set<string>();
+  let standaloneCount = 0;
+
+  for (const q of questions) {
+    if (q.stimulusId) {
+      stimuliSet.add(q.stimulusId);
+    } else {
+      standaloneCount++;
+    }
+  }
+
+  return stimuliSet.size + standaloneCount;
+}
+
+
+async function clearSelection(): Promise<void> {
   await db.meta.put({ key: META_SELECTED_KEY, value: [] });
 }
 
-export async function reorderSelected(newOrderedIds: string[]): Promise<void> {
+
+async function reorderSelected(newOrderedIds: string[]): Promise<void> {
   await db.meta.put({ key: META_SELECTED_KEY, value: newOrderedIds });
 }
 
 /* -------------------------------------------------------------
- * 5. Copy & Paste After APIs
+ * 5. Copy & Paste Group / Question APIs
  * ----------------------------------------------------------- */
 
-const META_CLIPBOARD_KEY = 'clipboard';
 
-export async function copyQuestion(questionId: string): Promise<void> {
+async function copyQuestion(questionId: string): Promise<void> {
   const q = await db.questions.get(questionId);
   if (!q) {
     throw new Error('Question not found');
@@ -468,12 +653,14 @@ export async function copyQuestion(questionId: string): Promise<void> {
   });
 }
 
-export async function getClipboard(): Promise<Question | null> {
+
+async function getClipboard(): Promise<Question | null> {
   const record = await db.meta.get(META_CLIPBOARD_KEY);
   return (record?.value as Question) || null;
 }
 
-export async function pasteAfter(targetQuestionId: string): Promise<Question | null> {
+
+async function pasteAfter(targetQuestionId: string): Promise<Question | null> {
   const clipboard = await getClipboard();
   if (!clipboard) {
     return null;
@@ -509,13 +696,180 @@ export async function pasteAfter(targetQuestionId: string): Promise<Question | n
   return newQuestion;
 }
 
+
+/**
+ * Copy or Cut an entire Stimulus Question Group
+ */
+async function copyStimulusGroup(
+  stimulusId: string | undefined,
+  sampleQuestionId: string,
+  mode: 'copy' | 'cut' = 'copy'
+): Promise<void> {
+  let stimulus: Stimulus | undefined;
+  let questions: Question[] = [];
+  let sourceTopicId = '';
+
+  if (stimulusId) {
+    stimulus = await db.stimuli.get(stimulusId);
+    questions = await db.questions.where('stimulusId').equals(stimulusId).toArray();
+    questions.sort((a, b) => a.order - b.order);
+    sourceTopicId = stimulus?.topicId || (questions[0]?.topicId ?? '');
+  } else {
+    const q = await db.questions.get(sampleQuestionId);
+    if (!q) throw new Error('Question not found');
+    questions = [q];
+    sourceTopicId = q.topicId;
+  }
+
+  const payload: GroupClipboardData = {
+    mode,
+    stimulus: stimulus ? JSON.parse(JSON.stringify(stimulus)) : undefined,
+    questions: JSON.parse(JSON.stringify(questions)),
+    sourceTopicId,
+  };
+
+  await db.meta.put({
+    key: META_GROUP_CLIPBOARD_KEY,
+    value: payload,
+  });
+}
+
+
+async function getGroupClipboard(): Promise<GroupClipboardData | null> {
+  const record = await db.meta.get(META_GROUP_CLIPBOARD_KEY);
+  return (record?.value as GroupClipboardData) || null;
+}
+
+
+async function clearGroupClipboard(): Promise<void> {
+  await db.meta.put({
+    key: META_GROUP_CLIPBOARD_KEY,
+    value: null,
+  });
+}
+
+
+/**
+ * Paste a stimulus group before or after a target
+ */
+async function pasteStimulusGroup(
+  targetTopicId: string,
+  targetStimulusId?: string,
+  targetQuestionId?: string,
+  position: 'before' | 'after' = 'after'
+): Promise<boolean> {
+  const clipboard = await getGroupClipboard();
+  if (!clipboard || clipboard.questions.length === 0) {
+    return false;
+  }
+
+  // Determine target order in topic
+  let targetOrder = 1;
+  if (targetStimulusId) {
+    const targetQuestions = await db.questions.where('stimulusId').equals(targetStimulusId).toArray();
+    if (targetQuestions.length > 0) {
+      targetOrder = position === 'before'
+        ? Math.min(...targetQuestions.map((q) => q.order))
+        : Math.max(...targetQuestions.map((q) => q.order));
+    }
+  } else if (targetQuestionId) {
+    const targetQ = await db.questions.get(targetQuestionId);
+    if (targetQ) {
+      targetOrder = targetQ.order;
+    }
+  }
+
+  const insertOrder = position === 'before' ? targetOrder : targetOrder + 1;
+
+  // Shift orders of existing questions
+  const topicQuestions = await db.questions.where('topicId').equals(targetTopicId).toArray();
+  const shiftAmount = clipboard.questions.length;
+
+  await db.transaction('rw', [db.questions, db.stimuli, db.meta], async () => {
+    for (const q of topicQuestions) {
+      if (q.order >= insertOrder) {
+        await db.questions.update(q.id, { order: q.order + shiftAmount });
+      }
+    }
+
+    if (clipboard.mode === 'copy') {
+      // New IDs for everything
+      let newStimulusId: string | undefined = undefined;
+      if (clipboard.stimulus) {
+        newStimulusId = generateId();
+        await db.stimuli.add({
+          ...clipboard.stimulus,
+          id: newStimulusId,
+          topicId: targetTopicId,
+        });
+      }
+
+      for (let i = 0; i < clipboard.questions.length; i++) {
+        const q = clipboard.questions[i];
+        await db.questions.add({
+          ...q,
+          id: generateId(),
+          topicId: targetTopicId,
+          stimulusId: newStimulusId,
+          order: insertOrder + i,
+        });
+      }
+    } else {
+      // mode: 'cut' -> Move existing questions & stimulus
+      if (clipboard.stimulus) {
+        await db.stimuli.update(clipboard.stimulus.id, {
+          topicId: targetTopicId,
+        });
+      }
+
+      for (let i = 0; i < clipboard.questions.length; i++) {
+        const q = clipboard.questions[i];
+        await db.questions.update(q.id, {
+          topicId: targetTopicId,
+          order: insertOrder + i,
+        });
+      }
+
+      // Clear clipboard after cut & paste
+      await db.meta.put({ key: META_GROUP_CLIPBOARD_KEY, value: null });
+    }
+  });
+
+  return true;
+}
+
+
+/**
+ * Delete an entire stimulus group (stimulus + all its questions)
+ */
+async function deleteStimulusGroup(
+  stimulusId: string | undefined,
+  questionIds: string[]
+): Promise<void> {
+  await db.transaction('rw', [db.stimuli, db.questions, db.meta], async () => {
+    if (stimulusId) {
+      await db.stimuli.delete(stimulusId);
+    }
+    for (const qId of questionIds) {
+      await db.questions.delete(qId);
+    }
+    // Remove from selectedIds
+    const current = await getSelectedIds();
+    const updated = current.filter((id) => !questionIds.includes(id));
+    await db.meta.put({ key: META_SELECTED_KEY, value: updated });
+  });
+}
+
 /* -------------------------------------------------------------
  * 6. Images & Paper Usage
  * ----------------------------------------------------------- */
 
-export async function getImageBlobUrl(imageId: string): Promise<string | null> {
+
+async function getImageBlobUrl(imageId: string): Promise<string | null> {
   try {
-    const img = await db.images.get(imageId);
+    // a paper can mix Type CQ + Chapter CQ questions, so also look in the other database
+    const sibling = db === chapterDb ? typeDatabase : chapterDb;
+    const img = (await db.images.get(imageId)) ?? (await sibling.images.get(imageId));
     if (!img || !img.blob) return null;
     return URL.createObjectURL(img.blob);
   } catch {
@@ -523,7 +877,8 @@ export async function getImageBlobUrl(imageId: string): Promise<string | null> {
   }
 }
 
-export async function saveImageBlob(blob: Blob, fileName: string): Promise<string> {
+
+async function saveImageBlob(blob: Blob, fileName: string): Promise<string> {
   const id = generateId();
   await db.images.add({
     id,
@@ -533,37 +888,8 @@ export async function saveImageBlob(blob: Blob, fileName: string): Promise<strin
   return id;
 }
 
-export interface QuestionBlockInput {
-  id?: string;
-  type: QuestionType;
-  marks: number;
-  questionText: string;
-  solutionText: string;
-  solutionImageIds: string[];
-  answerText?: string;
-  rating: number;
-  usedInBoards: BoardUsage[];
-}
 
-export interface SaveQuestionGroupPayload {
-  stimulusId?: string;
-  topicId: string;
-  stimulusText: string;
-  stimulusImageIds: string[];
-  boardTag?: string;
-  questions: QuestionBlockInput[];
-  deletedQuestionIds?: string[];
-}
-
-export interface QuestionGroupEditData {
-  stimulus?: Stimulus;
-  questions: Question[];
-  topicId: string;
-  chapterId?: string;
-  subjectId?: string;
-}
-
-export async function getQuestionGroupForEdit(questionId: string): Promise<QuestionGroupEditData | null> {
+async function getQuestionGroupForEdit(questionId: string): Promise<QuestionGroupEditData | null> {
   const q = await db.questions.get(questionId);
   if (!q) return null;
 
@@ -591,7 +917,8 @@ export async function getQuestionGroupForEdit(questionId: string): Promise<Quest
   };
 }
 
-export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Promise<{ stimulusId: string; questionIds: string[] }> {
+
+async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Promise<{ stimulusId: string; questionIds: string[] }> {
   let stimulusId = payload.stimulusId;
 
   // 1. Save or update Stimulus
@@ -601,6 +928,9 @@ export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Prom
       text: payload.stimulusText,
       imageIds: payload.stimulusImageIds,
       boardTag: payload.boardTag,
+      usedInBoards: payload.stimulusUsedInBoards ?? [],
+      rating: payload.stimulusRating,
+      reference: payload.reference ?? '',
     });
   } else {
     stimulusId = generateId();
@@ -610,6 +940,9 @@ export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Prom
       text: payload.stimulusText,
       imageIds: payload.stimulusImageIds,
       boardTag: payload.boardTag,
+      usedInBoards: payload.stimulusUsedInBoards ?? [],
+      rating: payload.stimulusRating,
+      reference: payload.reference ?? '',
     });
   }
 
@@ -621,13 +954,31 @@ export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Prom
   }
 
   // 3. Save or update Questions
+  //    The order of payload.questions IS the order the person arranged in the editor.
+  //    The group keeps the same "slots" (order numbers) it already occupied in the topic,
+  //    so re-arranging ক/খ/গ/ঘ never shifts other questions around.
   const existingUnderTopic = await db.questions.where('topicId').equals(payload.topicId).toArray();
   let maxOrder = existingUnderTopic.reduce((max, item) => Math.max(max, item.order || 0), 0);
+
+  const slots: number[] = [];
+  for (const qData of payload.questions) {
+    if (qData.id) {
+      const old = await db.questions.get(qData.id);
+      if (old && typeof old.order === 'number') slots.push(old.order);
+    }
+  }
+  slots.sort((a, b) => a - b);
+  // New blocks go after everything else, then take whatever slot their position gives them
+  while (slots.length < payload.questions.length) {
+    maxOrder += 1;
+    slots.push(maxOrder);
+  }
 
   const savedQuestionIds: string[] = [];
 
   for (let i = 0; i < payload.questions.length; i++) {
     const qData = payload.questions[i];
+    const slotOrder = slots[i];
     if (qData.id) {
       // Update existing question
       await db.questions.update(qData.id, {
@@ -640,13 +991,13 @@ export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Prom
         solutionImageIds: qData.solutionImageIds,
         answerText: qData.answerText,
         rating: qData.rating,
+        order: slotOrder,
         usedInBoards: qData.usedInBoards,
       });
       savedQuestionIds.push(qData.id);
     } else {
       // Add new question
       const newId = generateId();
-      maxOrder += 1;
       await db.questions.add({
         id: newId,
         topicId: payload.topicId,
@@ -658,7 +1009,7 @@ export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Prom
         solutionImageIds: qData.solutionImageIds,
         answerText: qData.answerText,
         rating: qData.rating,
-        order: maxOrder,
+        order: slotOrder,
         usedInBoards: qData.usedInBoards,
       });
       savedQuestionIds.push(newId);
@@ -668,14 +1019,8 @@ export async function saveQuestionGroup(payload: SaveQuestionGroupPayload): Prom
   return { stimulusId, questionIds: savedQuestionIds };
 }
 
-export interface QuestionPaperUsage {
-  paperId: string;
-  shortName: string;
-  title: string;
-  count: number;
-}
 
-export async function getQuestionPaperUsage(questionId: string): Promise<QuestionPaperUsage[]> {
+async function getQuestionPaperUsage(questionId: string): Promise<QuestionPaperUsage[]> {
   const papers = await db.papers.toArray();
   const usages: QuestionPaperUsage[] = [];
 
@@ -696,7 +1041,8 @@ export async function getQuestionPaperUsage(questionId: string): Promise<Questio
   return usages;
 }
 
-export async function getQuestionTotalUsageCount(questionId: string): Promise<number> {
+
+async function getQuestionTotalUsageCount(questionId: string): Promise<number> {
   const usages = await getQuestionPaperUsage(questionId);
   return usages.reduce((sum, u) => sum + u.count, 0);
 }
@@ -705,24 +1051,71 @@ export async function getQuestionTotalUsageCount(questionId: string): Promise<nu
  * 6.5 Paper Management & Statistics APIs
  * ----------------------------------------------------------- */
 
-export async function getPaperCount(): Promise<number> {
+
+async function getPaperCount(): Promise<number> {
   return await db.papers.count();
 }
 
-export async function getQuestionCount(): Promise<number> {
+
+async function getQuestionCount(): Promise<number> {
   return await db.questions.count();
 }
 
-export async function getPapers(): Promise<Paper[]> {
+
+async function getPapers(): Promise<Paper[]> {
   const list = await db.papers.toArray();
   return list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-export async function getPaperById(id: string): Promise<Paper | undefined> {
+
+async function getPaperById(id: string): Promise<Paper | undefined> {
   return await db.papers.get(id);
 }
 
-export async function savePaper(paper: Omit<Paper, 'id' | 'createdAt'> & { id?: string; createdAt?: number }): Promise<Paper> {
+
+async function getNextPaperLabel(
+  categoryId: string,
+  categoryName: string,
+  excludePaperId?: string
+): Promise<string> {
+  const papers = await db.papers.where('categoryId').equals(categoryId).toArray();
+  let max = 0;
+  for (const p of papers) {
+    if (p.id === excludePaperId) continue;
+    const n = paperLabelNumber(p.shortName, categoryName);
+    if (n !== null && n > max) max = n;
+  }
+  return `${categoryName.trim()}-${toBn(max + 1)}`;
+}
+
+
+/**
+ * Give every paper whose tag is not "<category>-<number>" yet a proper tag
+ * (old papers that still have a manual short name). Papers that already have a
+ * proper tag keep their number.
+ */
+async function relabelPapersByCategory(): Promise<void> {
+  const [cats, papers] = await Promise.all([db.categories.toArray(), db.papers.toArray()]);
+  for (const cat of cats) {
+    const inCat = papers
+      .filter((p) => p.categoryId === cat.id)
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    let max = 0;
+    for (const p of inCat) {
+      const n = paperLabelNumber(p.shortName, cat.name);
+      if (n !== null && n > max) max = n;
+    }
+    for (const p of inCat) {
+      if (paperLabelNumber(p.shortName, cat.name) === null) {
+        max += 1;
+        await db.papers.update(p.id, { shortName: `${cat.name.trim()}-${toBn(max)}` });
+      }
+    }
+  }
+}
+
+
+async function savePaper(paper: Omit<Paper, 'id' | 'createdAt'> & { id?: string; createdAt?: number }): Promise<Paper> {
   const id = paper.id || generateId();
   const fullPaper: Paper = {
     ...paper,
@@ -733,17 +1126,383 @@ export async function savePaper(paper: Omit<Paper, 'id' | 'createdAt'> & { id?: 
   return fullPaper;
 }
 
-export async function deletePaper(id: string): Promise<void> {
+
+async function deletePaper(id: string): Promise<void> {
   await db.papers.delete(id);
+}
+
+/* -------------------------------------------------------------
+ * 6.6 Category Management APIs
+ * ----------------------------------------------------------- */
+
+
+async function ensureUncategorized(): Promise<Category> {
+  const existing = await db.categories.where('name').equalsIgnoreCase(UNCATEGORIZED_NAME).first();
+  if (existing) return existing;
+  const created: Category = {
+    id: generateId(),
+    name: UNCATEGORIZED_NAME,
+    order: 0,
+    createdAt: Date.now(),
+  };
+  await db.categories.add(created);
+  return created;
+}
+
+
+async function ensureDefaultCategories(): Promise<Category[]> {
+  let list = await db.categories.toArray();
+  if (list.length === 0) {
+    const defNames = ['উইকলি মডেল টেস্ট', 'চ্যাপ্টার অ্যান্ড টেস্ট'];
+    const now = Date.now();
+    for (let i = 0; i < defNames.length; i++) {
+      await db.categories.add({
+        id: `cat_${now}_${i + 1}`,
+        name: defNames[i],
+        order: i + 1,
+        createdAt: now,
+      });
+    }
+    list = await db.categories.toArray();
+  }
+
+  // The "অশ্রেণিবদ্ধ" (uncategorized) category always exists
+  if (!list.some((c) => c.name.trim().toLowerCase() === UNCATEGORIZED_NAME.toLowerCase())) {
+    list.push(await ensureUncategorized());
+  }
+
+  // Ensure all existing papers have a valid categoryId
+  const allPapers = await db.papers.toArray();
+  const catByName = new Map<string, Category>();
+  list.forEach((c) => catByName.set(c.name.trim(), c));
+
+  for (const p of allPapers) {
+    if (!p.categoryId || !list.some((c) => c.id === p.categoryId)) {
+      const existingMatch = p.category ? catByName.get(p.category.trim()) : undefined;
+      if (existingMatch) {
+        await db.papers.update(p.id, { categoryId: existingMatch.id });
+      } else {
+        // Create new category for this paper or assign to first
+        const newCatName = p.category?.trim() || UNCATEGORIZED_NAME;
+        const newCat = await saveCategory(newCatName);
+        catByName.set(newCatName, newCat);
+        await db.papers.update(p.id, { categoryId: newCat.id });
+      }
+    }
+  }
+
+  await relabelPapersByCategory();
+
+  return list.sort((a, b) => a.order - b.order);
+}
+
+
+async function getCategories(): Promise<Category[]> {
+  await ensureDefaultCategories();
+  const list = await db.categories.toArray();
+  return list.sort((a, b) => a.order - b.order);
+}
+
+
+async function getCategory(id: string): Promise<Category | undefined> {
+  return await db.categories.get(id);
+}
+
+
+async function saveCategory(name: string): Promise<Category> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('ক্যাটেগরির নাম লিখুন');
+  }
+
+  const existing = await db.categories.where('name').equalsIgnoreCase(trimmed).first();
+  if (existing) {
+    return existing;
+  }
+
+  const all = await db.categories.toArray();
+  const maxOrder = all.reduce((max, c) => Math.max(max, c.order || 0), 0);
+  const newCat: Category = {
+    id: generateId(),
+    name: trimmed,
+    order: maxOrder + 1,
+    createdAt: Date.now(),
+  };
+
+  await db.categories.add(newCat);
+  return newCat;
+}
+
+
+async function updateCategory(id: string, name: string): Promise<void> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error('ক্যাটেগরির নাম লিখুন');
+  }
+  const existing = await db.categories.where('name').equalsIgnoreCase(trimmed).first();
+  if (existing && existing.id !== id) {
+    throw new Error('এই নামের ক্যাটেগরি ইতিমধ্যে রয়েছে');
+  }
+
+  const oldCat = await db.categories.get(id);
+  if (isUncategorizedCategory(oldCat)) {
+    throw new Error('"অশ্রেণিবদ্ধ" ক্যাটেগরির নাম বদলানো যাবে না');
+  }
+  await db.categories.update(id, { name: trimmed });
+  // Also update category string (and the "<category>-<number>" tag) in papers for consistency
+  const papers = await db.papers.where('categoryId').equals(id).toArray();
+  for (const p of papers) {
+    const changes: Partial<Paper> = { category: trimmed };
+    if (oldCat) {
+      const n = paperLabelNumber(p.shortName, oldCat.name);
+      if (n !== null) changes.shortName = `${trimmed}-${toBn(n)}`;
+    }
+    await db.papers.update(p.id, changes);
+  }
+}
+
+
+async function deleteCategory(id: string): Promise<void> {
+  const target = await db.categories.get(id);
+  if (!target) return;
+  if (isUncategorizedCategory(target)) {
+    throw new Error('"অশ্রেণিবদ্ধ" ক্যাটেগরি মোছা যাবে না');
+  }
+
+  // Papers of the deleted category move to "অশ্রেণিবদ্ধ"
+  const unclassified = await ensureUncategorized();
+  const affectedPapers = await db.papers.where('categoryId').equals(id).toArray();
+  for (const p of affectedPapers) {
+    await db.papers.update(p.id, {
+      categoryId: unclassified.id,
+      category: unclassified.name,
+    });
+  }
+
+  await db.categories.delete(id);
+}
+
+
+/** Delete several categories at once (papers move to "অশ্রেণিবদ্ধ"). Returns how many were deleted. */
+async function deleteCategories(ids: string[]): Promise<number> {
+  let deleted = 0;
+  for (const id of ids) {
+    const cat = await db.categories.get(id);
+    if (!cat || isUncategorizedCategory(cat)) continue;
+    await deleteCategory(id);
+    deleted++;
+  }
+  return deleted;
+}
+
+
+/** Save a manual order: the given ids get order 1,2,3… (the "অশ্রেণিবদ্ধ" category always stays first) */
+async function reorderCategories(orderedIds: string[]): Promise<void> {
+  await db.transaction('rw', db.categories, async () => {
+    let n = 1;
+    for (const id of orderedIds) {
+      const cat = await db.categories.get(id);
+      if (!cat || isUncategorizedCategory(cat)) continue;
+      await db.categories.update(id, { order: n++ });
+    }
+  });
+}
+
+
+async function getPapersByCategory(categoryId: string): Promise<Paper[]> {
+  const list = await db.papers.where('categoryId').equals(categoryId).toArray();
+  return list.sort((a, b) => {
+    const ao = a.order;
+    const bo = b.order;
+    if (ao !== undefined && bo !== undefined && ao !== bo) return ao - bo;
+    if (ao !== undefined && bo === undefined) return -1; // manually ordered papers first
+    if (ao === undefined && bo !== undefined) return 1;
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
+}
+
+
+/** Save a manual order of papers inside a category: the given ids get order 1,2,3… */
+async function reorderPapers(orderedIds: string[]): Promise<void> {
+  await db.transaction('rw', db.papers, async () => {
+    let n = 1;
+    for (const id of orderedIds) {
+      await db.papers.update(id, { order: n++ });
+    }
+  });
+}
+
+
+async function getCategoryStats(categoryId: string): Promise<{ paperCount: number; questionCount: number }> {
+  const papers = await db.papers.where('categoryId').equals(categoryId).toArray();
+  const paperCount = papers.length;
+  let questionCount = 0;
+  for (const p of papers) {
+    questionCount += p.questionIds?.length || 0;
+  }
+  return { paperCount, questionCount };
+}
+
+/* -------------------------------------------------------------
+ * 6.7 Advanced Category APIs (move / copy / paste / duplicate)
+ * ----------------------------------------------------------- */
+
+
+async function getCategoryClipboard(): Promise<CategoryClipboard | null> {
+  const rec = await db.meta.get(META_CATEGORY_CLIPBOARD_KEY);
+  const v = rec?.value as CategoryClipboard | null | undefined;
+  if (!v || !v.id || (v.type !== 'category' && v.type !== 'paper')) return null;
+  // Make sure the copied item still exists
+  if (v.type === 'category') {
+    const c = await db.categories.get(v.id);
+    return c ? { type: 'category', id: c.id, name: c.name } : null;
+  }
+  const p = await db.papers.get(v.id);
+  return p ? { type: 'paper', id: p.id, name: p.title || p.shortName } : null;
+}
+
+
+async function setCategoryClipboard(value: CategoryClipboard | null): Promise<void> {
+  await db.meta.put({ key: META_CATEGORY_CLIPBOARD_KEY, value });
+}
+
+
+/**
+ * Generate a category name that is not used yet: "Name (কপি)", "Name (কপি 2)" ...
+ */
+async function getUniqueCategoryName(baseName: string): Promise<string> {
+  const base = baseName.trim();
+  const all = await db.categories.toArray();
+  const used = new Set(all.map((c) => c.name.trim().toLowerCase()));
+  if (!used.has(base.toLowerCase())) return base;
+  let candidate = `${base} (কপি)`;
+  let n = 2;
+  while (used.has(candidate.toLowerCase())) {
+    candidate = `${base} (কপি ${n})`;
+    n++;
+  }
+  return candidate;
+}
+
+
+/**
+ * Move a paper (question paper) from its current category into another category
+ */
+async function movePaperToCategory(paperId: string, targetCategoryId: string): Promise<void> {
+  const target = await db.categories.get(targetCategoryId);
+  if (!target) throw new Error('গন্তব্য ক্যাটেগরি পাওয়া যায়নি');
+  const paper = await db.papers.get(paperId);
+  if (!paper) return;
+  if (paper.categoryId === target.id) return;
+  await db.papers.update(paperId, {
+    categoryId: target.id,
+    category: target.name,
+    shortName: await getNextPaperLabel(target.id, target.name),
+  });
+}
+
+
+/**
+ * Copy a paper into a category (creates an independent copy of the paper)
+ */
+async function duplicatePaper(paperId: string, targetCategoryId: string): Promise<Paper> {
+  const [paper, target] = await Promise.all([db.papers.get(paperId), db.categories.get(targetCategoryId)]);
+  if (!paper) throw new Error('প্রশ্নপত্রটি পাওয়া যায়নি');
+  if (!target) throw new Error('গন্তব্য ক্যাটেগরি পাওয়া যায়নি');
+
+  const copy: Paper = {
+    ...paper,
+    id: generateId(),
+    categoryId: target.id,
+    category: target.name,
+    shortName: await getNextPaperLabel(target.id, target.name),
+    createdAt: Date.now(),
+    questionIds: [...(paper.questionIds || [])],
+  };
+  await db.papers.add(copy);
+  return copy;
+}
+
+
+/**
+ * Batch helpers used by the Create screen (multi-select)
+ */
+async function movePapersToCategory(paperIds: string[], targetCategoryId: string): Promise<number> {
+  let count = 0;
+  for (const id of paperIds) {
+    const paper = await db.papers.get(id);
+    if (!paper) continue;
+    await movePaperToCategory(id, targetCategoryId);
+    count++;
+  }
+  return count;
+}
+
+
+async function duplicatePapers(paperIds: string[], targetCategoryId: string): Promise<number> {
+  let count = 0;
+  const base = Date.now();
+  for (const id of paperIds) {
+    const copy = await duplicatePaper(id, targetCategoryId);
+    // keep the copies in the same order as the originals
+    await db.papers.update(copy.id, { createdAt: base + (paperIds.length - 1 - count) });
+    count++;
+  }
+  return count;
+}
+
+
+async function deletePapers(paperIds: string[]): Promise<void> {
+  await db.papers.bulkDelete(paperIds);
+}
+
+
+/**
+ * Copy a whole category together with all of its papers
+ */
+async function duplicateCategory(categoryId: string): Promise<Category> {
+  const source = await db.categories.get(categoryId);
+  if (!source) throw new Error('ক্যাটেগরিটি পাওয়া যায়নি');
+
+  const name = await getUniqueCategoryName(source.name);
+  const all = await db.categories.toArray();
+  const maxOrder = all.reduce((max, c) => Math.max(max, c.order || 0), 0);
+
+  const newCat: Category = {
+    id: generateId(),
+    name,
+    order: maxOrder + 1,
+    createdAt: Date.now(),
+  };
+  await db.categories.add(newCat);
+
+  const papers = await db.papers.where('categoryId').equals(categoryId).toArray();
+  for (const p of papers) {
+    await db.papers.add({
+      ...p,
+      id: generateId(),
+      categoryId: newCat.id,
+      category: newCat.name,
+      questionIds: [...(p.questionIds || [])],
+    });
+  }
+  return newCat;
 }
 
 /* -------------------------------------------------------------
  * 7. Seed Sample Data (if database is empty)
  * ----------------------------------------------------------- */
 
-export async function seedInitialDataIfNeeded(): Promise<boolean> {
+
+async function seedInitialDataIfNeeded(): Promise<boolean> {
+  // Chapter CQ starts empty — the sample data is only for the Type CQ database
+  if (db.name !== 'QbExamDatabase') {
+    await ensureDefaultCategories();
+    return false;
+  }
   const count = await db.subjects.count();
   if (count > 0) {
+    await ensureDefaultCategories();
     return false; // Already initialized
   }
 
@@ -881,25 +1640,220 @@ export async function seedInitialDataIfNeeded(): Promise<boolean> {
     },
   ]);
 
-  // 7. Sample Paper to verify paper usage tracking
+  // 7. Initial Categories
+  const catWeeklyId = generateId();
+  const catChapterId = generateId();
+  await db.categories.bulkAdd([
+    {
+      id: catWeeklyId,
+      name: 'উইকলি মডেল টেস্ট',
+      order: 1,
+      createdAt: Date.now(),
+    },
+    {
+      id: catChapterId,
+      name: 'চ্যাপ্টার অ্যান্ড টেস্ট',
+      order: 2,
+      createdAt: Date.now(),
+    },
+  ]);
+
+  // 8. Sample Paper
   const paperId = generateId();
   await db.papers.add({
     id: paperId,
     shortName: 'মডেল টেস্ট-১',
     title: 'পদার্থবিজ্ঞান ১ম পত্র - স্পেশাল মডেল টেস্ট ২০২৫',
-    category: 'মডেল টেস্ট',
+    category: 'উইকলি মডেল টেস্ট',
+    categoryId: catWeeklyId,
     createdAt: Date.now(),
     duration: '২ ঘণ্টা',
     totalMarks: 50,
     questionIds: [qGaId, qGhaId],
   });
 
-  // 8. Initial Selection & Meta
+  // 9. Initial Selection & Meta
   await db.meta.bulkPut([
-    { key: META_SELECTED_KEY, value: [qGaId] },
+    { key: META_SELECTED_KEY, value: [qGaId, qGhaId] },
     { key: META_CLIPBOARD_KEY, value: null },
     { key: 'settings', value: { theme: 'light', fontSize: 15 } },
   ]);
 
   return true;
 }
+
+
+  return {
+    getSubjects,
+    getChapters,
+    getTopics,
+    getQuestionsByTopicGrouped,
+    getAllQuestions,
+    getStimulus,
+    getQuestion,
+    getHierarchyStats,
+    addSubject,
+    updateSubject,
+    addChapter,
+    updateChapter,
+    addTopic,
+    updateTopic,
+    addStimulus,
+    updateStimulus,
+    addQuestion,
+    updateQuestion,
+    deleteQuestion,
+    deleteStimulus,
+    deleteTopic,
+    deleteChapter,
+    deleteSubject,
+    reorderSubjects,
+    reorderChapters,
+    reorderTopics,
+    reorderQuestions,
+    getSelectedIds,
+    isQuestionSelected,
+    toggleSelected,
+    toggleStimulusSelect,
+    getSelectedStimuliCount,
+    clearSelection,
+    reorderSelected,
+    copyQuestion,
+    getClipboard,
+    pasteAfter,
+    copyStimulusGroup,
+    getGroupClipboard,
+    clearGroupClipboard,
+    pasteStimulusGroup,
+    deleteStimulusGroup,
+    getImageBlobUrl,
+    saveImageBlob,
+    getQuestionGroupForEdit,
+    saveQuestionGroup,
+    getQuestionPaperUsage,
+    getQuestionTotalUsageCount,
+    getPaperCount,
+    getQuestionCount,
+    getPapers,
+    getPaperById,
+    getNextPaperLabel,
+    relabelPapersByCategory,
+    savePaper,
+    deletePaper,
+    ensureDefaultCategories,
+    getCategories,
+    getCategory,
+    saveCategory,
+    updateCategory,
+    deleteCategory,
+    deleteCategories,
+    reorderCategories,
+    ensureUncategorized,
+    getPapersByCategory,
+    reorderPapers,
+    getCategoryStats,
+    getCategoryClipboard,
+    setCategoryClipboard,
+    getUniqueCategoryName,
+    movePaperToCategory,
+    duplicatePaper,
+    movePapersToCategory,
+    duplicatePapers,
+    deletePapers,
+    duplicateCategory,
+    seedInitialDataIfNeeded,
+  };
+}
+
+export type QbApi = ReturnType<typeof createQbApi>;
+
+/** Type CQ (the old "Collection") — keeps the original database, so existing data is untouched */
+export const typeApi: QbApi = createQbApi(db);
+/** Chapter CQ — its own separate IndexedDB database */
+export const chapterApi: QbApi = createQbApi(chapterDb);
+
+export function getApi(scope: CqScope): QbApi {
+  return scope === 'chapter' ? chapterApi : typeApi;
+}
+
+// Backward-compatible named exports (Type CQ / default database)
+export const {
+  getSubjects,
+  getChapters,
+  getTopics,
+  getQuestionsByTopicGrouped,
+  getAllQuestions,
+  getStimulus,
+  getQuestion,
+  getHierarchyStats,
+  addSubject,
+  updateSubject,
+  addChapter,
+  updateChapter,
+  addTopic,
+  updateTopic,
+  addStimulus,
+  updateStimulus,
+  addQuestion,
+  updateQuestion,
+  deleteQuestion,
+  deleteStimulus,
+  deleteTopic,
+  deleteChapter,
+  deleteSubject,
+  reorderSubjects,
+  reorderChapters,
+  reorderTopics,
+  reorderQuestions,
+  getSelectedIds,
+  isQuestionSelected,
+  toggleSelected,
+  toggleStimulusSelect,
+  getSelectedStimuliCount,
+  clearSelection,
+  reorderSelected,
+  copyQuestion,
+  getClipboard,
+  pasteAfter,
+  copyStimulusGroup,
+  getGroupClipboard,
+  clearGroupClipboard,
+  pasteStimulusGroup,
+  deleteStimulusGroup,
+  getImageBlobUrl,
+  saveImageBlob,
+  getQuestionGroupForEdit,
+  saveQuestionGroup,
+  getQuestionPaperUsage,
+  getQuestionTotalUsageCount,
+  getPaperCount,
+  getQuestionCount,
+  getPapers,
+  getPaperById,
+  getNextPaperLabel,
+  relabelPapersByCategory,
+  savePaper,
+  deletePaper,
+  ensureDefaultCategories,
+  getCategories,
+  getCategory,
+  saveCategory,
+  updateCategory,
+  deleteCategory,
+  deleteCategories,
+  reorderCategories,
+  ensureUncategorized,
+  getPapersByCategory,
+  reorderPapers,
+  getCategoryStats,
+  getCategoryClipboard,
+  setCategoryClipboard,
+  getUniqueCategoryName,
+  movePaperToCategory,
+  duplicatePaper,
+  movePapersToCategory,
+  duplicatePapers,
+  deletePapers,
+  duplicateCategory,
+  seedInitialDataIfNeeded,
+} = typeApi;

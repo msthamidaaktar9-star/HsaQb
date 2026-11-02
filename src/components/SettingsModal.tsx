@@ -2,6 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { X, Moon, Sun, Type, FileText, Check, Settings as SettingsIcon } from 'lucide-react';
 import { getAppSettings, saveAppSettings, type AppSettings, type ThemeMode, type FontSizeOption } from '../utils/settings';
 import { useToast } from './Toast';
+import {
+  AUTO_BACKUP_ROOT,
+  getLastAutoBackupDate,
+  isAutoBackupEnabled,
+  runAutoBackup,
+  setAutoBackupEnabled,
+} from '../utils/autoBackup';
 
 export interface SettingsModalProps {
   isOpen: boolean;
@@ -14,7 +21,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   const [theme, setTheme] = useState<ThemeMode>('light');
   const [fontSize, setFontSize] = useState<FontSizeOption>('medium');
   const [defaultPaperTitle, setDefaultPaperTitle] = useState('');
+  const [defaultPaperNote, setDefaultPaperNote] = useState('');
   const [loading, setLoading] = useState(false);
+  const [autoBackupOn, setAutoBackupOn] = useState(true);
+  const [lastBackup, setLastBackup] = useState<string | null>(null);
+  const [backingUp, setBackingUp] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -23,11 +34,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
       setTheme(s.theme);
       setFontSize(s.fontSize);
       setDefaultPaperTitle(s.defaultPaperTitle || '');
+      setDefaultPaperNote(s.defaultPaperNote ?? '');
+      setAutoBackupOn(isAutoBackupEnabled());
+      setLastBackup(getLastAutoBackupDate());
     };
     load();
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  const toggleAutoBackup = () => {
+    const next = !autoBackupOn;
+    setAutoBackupOn(next);
+    setAutoBackupEnabled(next);
+  };
+
+  const handleBackupNow = async () => {
+    setBackingUp(true);
+    try {
+      const r = await runAutoBackup(true);
+      if (r.status === 'done') {
+        setLastBackup(getLastAutoBackupDate());
+        showToast(`ব্যাকআপ হয়েছে: ${r.folder}`, 4500);
+      } else if (r.status === 'unsupported') {
+        showToast('ব্যাকআপ ফোনের অ্যাপে কাজ করে (ব্রাউজারে নয়)');
+      } else if (r.status === 'no-access') {
+        showToast('স্টোরেজ অনুমতি দেওয়া হয়নি');
+      } else if (r.status === 'error') {
+        showToast(`ব্যাকআপ ব্যর্থ: ${r.message}`, 5000);
+      }
+    } finally {
+      setBackingUp(false);
+    }
+  };
 
   const handleSave = async () => {
     setLoading(true);
@@ -36,6 +75,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         theme,
         fontSize,
         defaultPaperTitle: defaultPaperTitle.trim() || 'পদার্থবিজ্ঞান ১ম পত্র - মডেল টেস্ট',
+        defaultPaperNote: defaultPaperNote.trim(),
       };
       await saveAppSettings(newSettings);
       showToast('সেটিংস সফলভাবে সংরক্ষিত হয়েছে');
@@ -109,7 +149,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                 <span>ডার্ক (Dark)</span>
               </button>
             </div>
-            <p className="text-[11px] text-[#64748B] dark:text-slate-400">
+            <p className="text-[0.6875rem] text-[#64748B] dark:text-slate-400">
               * ডার্ক মোডেও পরীক্ষার A4 প্রশ্নপত্র সবসময় স্বাভাবিক সাদা পৃষ্ঠায় প্রদর্শিত হবে।
             </p>
           </div>
@@ -157,9 +197,67 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
               placeholder="যেমন: পদার্থবিজ্ঞান ১ম পত্র - মডেল টেস্ট"
               className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[#D5D9E2] dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-[#1B1F2A] dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
             />
-            <p className="text-[11px] text-[#64748B] dark:text-slate-400">
+            <p className="text-[0.6875rem] text-[#64748B] dark:text-slate-400">
               Create ট্যাবে নতুন প্রশ্নপত্র তৈরির সময় এই শিরোনামটি স্বয়ংক্রিয়ভাবে বসবে।
             </p>
+          </div>
+
+          {/* 4. Default Paper Note (দ্রষ্টব্য) */}
+          <div className="space-y-2 pt-2 border-t border-[#F2F4F8] dark:border-slate-800">
+            <label className="text-xs font-bold text-[#1B1F2A] dark:text-slate-200 flex items-center gap-1.5">
+              <FileText className="w-4 h-4 text-[#3B4FD8]" />
+              <span>প্রশ্নপত্রের ডিফল্ট দ্রষ্টব্য</span>
+            </label>
+            <textarea
+              value={defaultPaperNote}
+              onChange={(e) => setDefaultPaperNote(e.target.value)}
+              rows={4}
+              placeholder="যেমন: [ দ্রষ্টব্য: ডান পাশের সংখ্যা প্রশ্নের পূর্ণমান নির্দেশক। ]"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-[#D5D9E2] dark:border-slate-700 bg-white dark:bg-slate-800 text-xs leading-relaxed text-[#1B1F2A] dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#3B4FD8] resize-y"
+            />
+            <p className="text-[0.6875rem] text-[#64748B] dark:text-slate-400">
+              নতুন প্রশ্নপত্র তৈরির সময় "দ্রষ্টব্য" ঘরে এই লেখাটি স্বয়ংক্রিয়ভাবে বসবে। ফাঁকা রাখলে কোনো দ্রষ্টব্য আসবে না।
+            </p>
+          </div>
+
+          {/* 5. Daily automatic backup */}
+          <div className="space-y-2 pt-2 border-t border-[#F2F4F8] dark:border-slate-800">
+            <div className="flex items-center justify-between gap-3">
+              <label className="text-xs font-bold text-[#1B1F2A] dark:text-slate-200 flex items-center gap-1.5">
+                <FileText className="w-4 h-4 text-[#3B4FD8]" />
+                <span>দৈনিক অটো ব্যাকআপ</span>
+              </label>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoBackupOn}
+                onClick={toggleAutoBackup}
+                className={`relative w-11 h-6 min-h-0 rounded-full transition-colors ${
+                  autoBackupOn ? 'bg-[#3B4FD8]' : 'bg-[#CBD5E1] dark:bg-slate-600'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${
+                    autoBackupOn ? 'translate-x-5' : ''
+                  }`}
+                />
+              </button>
+            </div>
+            <p className="text-[0.6875rem] leading-relaxed text-[#64748B] dark:text-slate-400">
+              প্রতিদিন তারিখ দিয়ে নতুন ফোল্ডার হবে ({AUTO_BACKUP_ROOT}/তারিখ) — ভেতরে ৩টি ফাইল: টাইপ CQ, অধ্যায় CQ ও ফুল ব্যাকআপ।
+              অ্যাপ খুললে বা চালু থাকা অবস্থায় দিনের প্রথমবার নিজে থেকে হবে।
+            </p>
+            <p className="text-[0.6875rem] font-semibold text-[#1B1F2A] dark:text-slate-200">
+              সর্বশেষ অটো ব্যাকআপ: {lastBackup || 'এখনো হয়নি'}
+            </p>
+            <button
+              type="button"
+              onClick={handleBackupNow}
+              disabled={backingUp}
+              className="min-h-[44px] px-4 py-2 rounded-xl border border-[#D5D9E2] dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-[#3B4FD8] dark:text-indigo-300 disabled:opacity-50"
+            >
+              {backingUp ? 'ব্যাকআপ হচ্ছে...' : 'এখনই ব্যাকআপ নিন'}
+            </button>
           </div>
         </div>
 

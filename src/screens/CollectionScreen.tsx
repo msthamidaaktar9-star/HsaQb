@@ -1,45 +1,30 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Header } from '../components/Header';
 import { useToast } from '../components/Toast';
 import { ConfirmDialog } from '../components/ConfirmDialog';
 import { PromptDialog } from '../components/PromptDialog';
 import { QuestionFormModal } from '../components/QuestionFormModal';
 import { ImportCollectionModal } from '../components/ImportCollectionModal';
+import {
+  getMultiClipboard,
+  getMultiClipboardMode,
+  clearMultiClipboard,
+  pasteMultiClipboard,
+  countMultiClipboard,
+} from '../db/crossDb';
+import { PasteQuestionsModal } from '../components/PasteQuestionsModal';
+import { ImageViewerModal } from '../components/ImageViewerModal';
+import { ReferenceDialog } from '../components/ReferenceDialog';
 import { exportQuestionCollection } from '../utils/collectionTransfer';
 import { RichText } from '../components/RichText';
+import { QuestionBoardTags } from '../components/QuestionBoardTags';
 import { KebabMenu, type MenuItem } from '../components/KebabMenu';
 import { toBn, toBnPad2 } from '../utils/toBn';
 import { useNavigation } from '../utils/navigation';
+import { getDb, type CqScope } from '../db/db';
 import {
-  seedInitialDataIfNeeded,
-  getSubjects,
-  getChapters,
-  getTopics,
-  getQuestionsByTopicGrouped,
-  getHierarchyStats,
-  getSelectedIds,
-  toggleSelected,
-  clearSelection,
-  copyQuestion,
-  pasteAfter,
-  getClipboard,
+  getApi,
   getRatingStarsText,
-  getQuestionPaperUsage,
-  getImageBlobUrl,
-  addSubject,
-  updateSubject,
-  deleteSubject,
-  reorderSubjects,
-  addChapter,
-  updateChapter,
-  deleteChapter,
-  reorderChapters,
-  addTopic,
-  updateTopic,
-  deleteTopic,
-  reorderTopics,
-  deleteQuestion,
-  reorderQuestions,
   type Subject,
   type Chapter,
   type Topic,
@@ -47,6 +32,7 @@ import {
   type StimulusWithQuestions,
   type HierarchyStats,
   type QuestionPaperUsage,
+  type GroupClipboardData,
 } from '../db/api';
 import {
   ChevronRight,
@@ -54,14 +40,13 @@ import {
   ArrowDown,
   Check,
   Search,
-  CheckSquare,
-  Square,
   Plus,
   RefreshCw,
   FolderOpen,
   Eye,
   EyeOff,
   Copy,
+  Scissors,
   PlusCircle,
   FileEdit,
   Trash2,
@@ -69,7 +54,10 @@ import {
   Award,
   Layers,
   Upload,
+  ClipboardPaste,
   Download,
+  Square,
+  BookMarked,
 } from 'lucide-react';
 
 type DrillView =
@@ -78,12 +66,67 @@ type DrillView =
   | { level: 'topics'; subject: Subject; chapter: Chapter }
   | { level: 'questions'; subject: Subject; chapter: Chapter; topic: Topic };
 
-export const CollectionScreen: React.FC = () => {
+// Remembers where the user was inside Collection, so switching tabs and coming back restores it
+const lastDrillViews: Record<CqScope, DrillView> = {
+  type: { level: 'subjects' },
+  chapter: { level: 'subjects' },
+};
+
+interface CollectionScreenProps {
+  /** 'type' = Type CQ (old Collection), 'chapter' = Chapter CQ */
+  scope?: CqScope;
+}
+
+/**
+ * Used by the Filter tab ("open where this question is"): jump straight to a topic's question list
+ * the next time the Type CQ / Chapter CQ tab opens, and highlight the question there.
+ */
+const pendingFocusQuestion: Record<CqScope, string | null> = { type: null, chapter: null };
+
+export function openCollectionAtQuestion(
+  scope: CqScope,
+  location: { subject: Subject; chapter: Chapter; topic: Topic },
+  questionId: string
+): void {
+  lastDrillViews[scope] = { level: 'questions', ...location };
+  pendingFocusQuestion[scope] = questionId;
+}
+
+export const CollectionScreen: React.FC<CollectionScreenProps> = ({ scope = 'type' as CqScope }) => {
+  const db = getDb(scope);
+  const { seedInitialDataIfNeeded, getSubjects, getChapters, getTopics, getQuestionsByTopicGrouped, getHierarchyStats, getSelectedIds, toggleStimulusSelect, getSelectedStimuliCount, clearSelection, copyStimulusGroup, getGroupClipboard, clearGroupClipboard, pasteStimulusGroup, deleteStimulusGroup, getQuestionPaperUsage, getImageBlobUrl, addSubject, updateSubject, deleteSubject, reorderSubjects, addChapter, updateChapter, deleteChapter, reorderChapters, addTopic, updateTopic, deleteTopic, reorderTopics } = getApi(scope);
   const { showToast } = useToast();
   const { registerBackHandler } = useNavigation();
 
-  // Navigation Drill-down View State
-  const [currentView, setCurrentView] = useState<DrillView>({ level: 'subjects' });
+  // Navigation Drill-down View State (restored from last visit)
+  const [currentView, setCurrentView] = useState<DrillView>(lastDrillViews[scope]);
+
+  useEffect(() => {
+    lastDrillViews[scope] = currentView;
+  }, [currentView, scope]);
+
+  // If the remembered chapter/topic no longer exists (deleted/imported elsewhere), fall back to subjects
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const v = lastDrillViews[scope];
+        if (v.level === 'subjects') return;
+        const subjectOk = !!(await db.subjects.get(v.subject.id));
+        const chapterOk = v.level === 'chapters' ? true : !!(await db.chapters.get(v.chapter.id));
+        const topicOk = v.level === 'questions' ? !!(await db.topics.get(v.topic.id)) : true;
+        if (!cancelled && !(subjectOk && chapterOk && topicOk)) {
+          setCurrentView({ level: 'subjects' });
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Data states
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -91,6 +134,7 @@ export const CollectionScreen: React.FC = () => {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [questionGroups, setQuestionGroups] = useState<StimulusWithQuestions[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedStimuliCount, setSelectedStimuliCount] = useState<number>(0);
   const [stats, setStats] = useState<HierarchyStats>({
     subjectStats: {},
     chapterStats: {},
@@ -98,12 +142,32 @@ export const CollectionScreen: React.FC = () => {
   });
   const [questionUsages, setQuestionUsages] = useState<Record<string, QuestionPaperUsage[]>>({});
   const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+  const [groupClipboard, setGroupClipboard] = useState<GroupClipboardData | null>(null);
+  // Questions copied from the Filter tab (many at once)
+  const [multiClipCount, setMultiClipCount] = useState<number>(0);
+  const [multiClipMode, setMultiClipMode] = useState<'copy' | 'cut'>('copy');
+  // "রেফারেন্স দেখুন" dialog of a question card
+  const [referenceView, setReferenceView] = useState<{ isOpen: boolean; text: string }>({ isOpen: false, text: '' });
 
   // Loading & Modes
   const [loading, setLoading] = useState(true);
   const [isReordering, setIsReordering] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedSolutions, setExpandedSolutions] = useState<Record<string, boolean>>({});
+
+  // Full screen image viewer
+  const [imageViewerState, setImageViewerState] = useState<{
+    isOpen: boolean;
+    images: Array<{ url: string; alt?: string }>;
+    initialIndex: number;
+  }>({
+    isOpen: false,
+    images: [],
+    initialIndex: 0,
+  });
+
+  // Breadcrumb horizontal scroll reference
+  const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
 
   // Dialog States
   const [promptDialog, setPromptDialog] = useState<{
@@ -141,6 +205,7 @@ export const CollectionScreen: React.FC = () => {
   });
 
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
+  const [showPasteModal, setShowPasteModal] = useState<boolean>(false);
 
   // Load Hierarchy Data based on current view
   const loadData = useCallback(async () => {
@@ -148,15 +213,24 @@ export const CollectionScreen: React.FC = () => {
     try {
       await seedInitialDataIfNeeded();
 
-      const [subList, statsData, selIds] = await Promise.all([
+      const [subList, statsData, selIds, clip, multiClip, multiMode] = await Promise.all([
         getSubjects(),
         getHierarchyStats(),
         getSelectedIds(),
+        getGroupClipboard(),
+        getMultiClipboard(),
+        getMultiClipboardMode(),
       ]);
+      setMultiClipCount(countMultiClipboard(multiClip));
+      setMultiClipMode(multiMode);
 
       setSubjects(subList);
       setStats(statsData);
       setSelectedIds(selIds);
+      setGroupClipboard(clip);
+
+      const sCount = await getSelectedStimuliCount(selIds);
+      setSelectedStimuliCount(sCount);
 
       if (currentView.level === 'chapters') {
         const chList = await getChapters(currentView.subject.id);
@@ -198,17 +272,47 @@ export const CollectionScreen: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [currentView, showToast]);
+  }, [currentView, showToast, scope, multiClipCount]);
 
   useEffect(() => {
     loadData();
     setIsReordering(false);
   }, [loadData]);
 
+  // Chapter CQ has no topic level: every chapter owns one hidden default topic that holds its questions
+  const openChapter = useCallback(
+    async (subject: Subject, chapter: Chapter) => {
+      if (scope !== 'chapter') {
+        setCurrentView({ level: 'topics', subject, chapter });
+        return;
+      }
+      try {
+        const existing = await getTopics(chapter.id);
+        const topic = existing[0] ?? (await addTopic(chapter.id, 'সকল প্রশ্ন'));
+        setCurrentView({ level: 'questions', subject, chapter, topic });
+      } catch (err) {
+        console.error('Failed to open chapter:', err);
+        showToast('অধ্যায় খুলতে সমস্যা হয়েছে');
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scope, showToast]
+  );
+
   // Handle hardware & UI Back Navigation
   const handleGoBack = useCallback((): boolean => {
+    if (imageViewerState.isOpen) {
+      setImageViewerState((prev) => ({ ...prev, isOpen: false }));
+      return true;
+    }
+
     if (isReordering) {
       setIsReordering(false);
+      return true;
+    }
+
+    if (currentView.level === 'questions' && scope === 'chapter') {
+      setCurrentView({ level: 'chapters', subject: currentView.subject });
       return true;
     }
 
@@ -235,7 +339,7 @@ export const CollectionScreen: React.FC = () => {
     }
 
     return false; // Already at Subjects level
-  }, [currentView, isReordering]);
+  }, [currentView, isReordering, imageViewerState.isOpen, scope]);
 
   // Register with Capacitor Back Button listener
   useEffect(() => {
@@ -245,7 +349,30 @@ export const CollectionScreen: React.FC = () => {
     return unregister;
   }, [handleGoBack, registerBackHandler]);
 
-  // Reorder Item Up / Down
+  // Arrived from the Filter tab: scroll to the question and flash it
+  useEffect(() => {
+    const qid = pendingFocusQuestion[scope];
+    if (!qid || currentView.level !== 'questions' || loading || questionGroups.length === 0) return;
+    const el = document.querySelector<HTMLElement>(`[data-qids~="${qid}"]`);
+    if (!el) return;
+    pendingFocusQuestion[scope] = null;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    const cls = ['ring-4', 'ring-amber-400'];
+    el.classList.add(...cls);
+    window.setTimeout(() => el.classList.remove(...cls), 2200);
+  }, [scope, currentView, loading, questionGroups]);
+
+  // Auto-scroll breadcrumb to the right end whenever currentView changes
+  useEffect(() => {
+    if (breadcrumbContainerRef.current) {
+      breadcrumbContainerRef.current.scrollTo({
+        left: breadcrumbContainerRef.current.scrollWidth,
+        behavior: 'smooth',
+      });
+    }
+  }, [currentView]);
+
+  // Reorder Item Up / Down (for Subjects, Chapters, Topics)
   const handleMoveItem = async (index: number, direction: 'up' | 'down') => {
     const targetIndex = direction === 'up' ? index - 1 : index + 1;
 
@@ -291,13 +418,19 @@ export const CollectionScreen: React.FC = () => {
     }
   };
 
-  // Toggle question selection
-  const handleToggleSelect = async (questionId: string) => {
+  // Toggle stimulus selection (all its sub-questions)
+  const handleToggleStimulusGroup = async (grp: StimulusWithQuestions) => {
     try {
-      const next = await toggleSelected(questionId);
+      const qIds = grp.questions.map((q) => q.id);
+      const next = await toggleStimulusSelect(grp.stimulus?.id, qIds);
       setSelectedIds(next);
-      const isSelected = next.includes(questionId);
-      showToast(isSelected ? 'প্রশ্ন নির্বাচন করা হয়েছে' : 'নির্বাচন বাতিল করা হয়েছে');
+
+      const sCount = await getSelectedStimuliCount(next);
+      setSelectedStimuliCount(sCount);
+
+      const allSelected = qIds.every((id) => next.includes(id));
+      showToast(allSelected ? 'প্রশ্ন নির্বাচন করা হয়েছে' : 'নির্বাচন বাতিল করা হয়েছে');
+
       // refresh stats
       const statsData = await getHierarchyStats();
       setStats(statsData);
@@ -315,6 +448,7 @@ export const CollectionScreen: React.FC = () => {
       onConfirm: async () => {
         await clearSelection();
         setSelectedIds([]);
+        setSelectedStimuliCount(0);
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
         showToast('সব নির্বাচন সফলভাবে মোছা হয়েছে');
         const statsData = await getHierarchyStats();
@@ -323,86 +457,176 @@ export const CollectionScreen: React.FC = () => {
     });
   };
 
-  // Copy Question
-  const handleCopyQuestion = async (questionId: string) => {
+  // Copy / Cut Stimulus Group
+  const handleCopyOrCutGroup = async (grp: StimulusWithQuestions, mode: 'copy' | 'cut') => {
     try {
-      await copyQuestion(questionId);
-      showToast('কপি হয়েছে');
-    } catch {
-      showToast('কপি করতে ব্যর্থ হয়েছে');
+      const sampleQId = grp.questions[0]?.id;
+      if (!sampleQId) return;
+
+      await copyStimulusGroup(grp.stimulus?.id, sampleQId, mode);
+      await clearMultiClipboard(); // only one clipboard is active at a time
+      setMultiClipCount(0);
+      const clip = await getGroupClipboard();
+      setGroupClipboard(clip);
+      showToast(mode === 'cut' ? 'কাট করা হয়েছে' : 'কপি করা হয়েছে');
+    } catch (err: any) {
+      console.error(err);
+      showToast('কপি ব্যর্থ হয়েছে');
     }
   };
 
-  // Paste after Question
-  const handlePasteAfterQuestion = async (targetQuestionId: string) => {
+  // Paste Stimulus Group (before or after)
+  const handlePasteGroup = async (
+    targetGrp: StimulusWithQuestions,
+    position: 'before' | 'after'
+  ) => {
     try {
-      const clip = await getClipboard();
-      if (!clip) {
-        showToast('আগে Copy করুন');
+      if (currentView.level !== 'questions') return;
+
+      // Questions copied from the Filter tab
+      if (multiClipCount > 0) {
+        const n = await pasteMultiClipboard(scope, currentView.topic.id, position, {
+          stimulusId: targetGrp.stimulus?.id,
+          questionId: targetGrp.questions[0]?.id,
+        });
+        showToast(`${toBn(n)}টি প্রশ্ন পেস্ট হয়েছে`);
+        loadData();
         return;
       }
-      const created = await pasteAfter(targetQuestionId);
-      if (created) {
-        showToast('পেস্ট করা হয়েছে');
+
+      const clip = await getGroupClipboard();
+      if (!clip || clip.questions.length === 0) {
+        showToast('আগে Copy বা Cut করুন');
+        return;
+      }
+
+      const targetStimulusId = targetGrp.stimulus?.id;
+      const targetQuestionId = targetGrp.questions[0]?.id;
+
+      const success = await pasteStimulusGroup(
+        currentView.topic.id,
+        targetStimulusId,
+        targetQuestionId,
+        position
+      );
+
+      if (success) {
+        showToast('পেস্ট সম্পন্ন হয়েছে');
+        const updatedClip = await getGroupClipboard();
+        setGroupClipboard(updatedClip);
         loadData();
       }
-    } catch {
+    } catch (err: any) {
+      console.error(err);
       showToast('পেস্ট করতে ব্যর্থ হয়েছে');
     }
   };
 
-  // Delete Question
-  const handleDeleteQuestion = (questionId: string) => {
+  // Paste the questions copied from the Filter tab at the END of the open type / chapter
+  const handlePasteMultiAtEnd = async () => {
+    if (currentView.level !== 'questions') return;
+    try {
+      if (multiClipCount === 0) {
+        showToast('ফিল্টার ট্যাব থেকে আগে প্রশ্ন কপি করুন');
+        return;
+      }
+      const n = await pasteMultiClipboard(scope, currentView.topic.id, 'end');
+      showToast(`${toBn(n)}টি প্রশ্ন পেস্ট হয়েছে`);
+      loadData();
+    } catch (err) {
+      console.error(err);
+      showToast('পেস্ট করতে ব্যর্থ হয়েছে');
+    }
+  };
+
+  // Clear Group Clipboard
+  const handleClearClipboard = async () => {
+    await clearGroupClipboard();
+    await clearMultiClipboard();
+    setMultiClipCount(0);
+    setGroupClipboard(null);
+    showToast('ক্লিপবোর্ড খালি করা হয়েছে');
+  };
+
+  // Delete Stimulus Group
+  const handleDeleteGroupPrompt = (grp: StimulusWithQuestions) => {
     setConfirmDialog({
       isOpen: true,
       title: 'প্রশ্ন মুছবেন?',
-      message: 'আপনি কি নিশ্চিত যে এই প্রশ্নটি মুছে ফেলতে চান?',
+      message: 'এই উদ্দীপক এবং এর সাথে যুক্ত সকল প্রশ্ন স্থায়ীভাবে মুছে ফেলতে চান?',
       onConfirm: async () => {
-        await deleteQuestion(questionId);
-        setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
-        showToast('প্রশ্ন মুছে ফেলা হয়েছে');
-        loadData();
+        try {
+          const qIds = grp.questions.map((q) => q.id);
+          await deleteStimulusGroup(grp.stimulus?.id, qIds);
+          setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
+          showToast('প্রশ্নটি মুছে ফেলা হয়েছে');
+          loadData();
+        } catch {
+          showToast('মুছতে সমস্যা হয়েছে');
+        }
       },
     });
   };
 
-  // Add Item Dialog Handler
+  // Edit Stimulus Group (opens QuestionFormModal with stimulus and all questions)
+  const handleEditGroup = (grp: StimulusWithQuestions) => {
+    const sampleQId = grp.questions[0]?.id;
+    if (!sampleQId) return;
+
+    setQuestionFormState({
+      isOpen: true,
+      initialTopicId: currentView.level === 'questions' ? currentView.topic.id : undefined,
+      editQuestionId: sampleQId,
+    });
+  };
+
+  // Open Solution Image Viewer
+  const handleOpenImageViewer = (urls: string[], initialIdx: number) => {
+    setImageViewerState({
+      isOpen: true,
+      images: urls.map((u) => ({ url: u, alt: 'সমাধানের চিত্র' })),
+      initialIndex: initialIdx,
+    });
+  };
+
+  // Add Item Dialog (Subject, Chapter, Topic)
   const handleOpenAddDialog = () => {
     if (currentView.level === 'subjects') {
       setPromptDialog({
         isOpen: true,
-        title: 'নতুন বিষয় যোগ করুন',
+        title: 'নতুন বিষয়',
         initialValue: '',
         onConfirm: async (val) => {
-          await addSubject(val);
+          if (!val.trim()) return;
+          await addSubject(val.trim());
           setPromptDialog((prev) => ({ ...prev, isOpen: false }));
-          showToast('নতুন বিষয় যোগ হয়েছে');
+          showToast('নতুন বিষয় যুক্ত হয়েছে');
           loadData();
         },
       });
     } else if (currentView.level === 'chapters') {
-      const subject = currentView.subject;
       setPromptDialog({
         isOpen: true,
-        title: 'নতুন অধ্যায় যোগ করুন',
+        title: 'নতুন অধ্যায়',
         initialValue: '',
         onConfirm: async (val) => {
-          await addChapter(subject.id, val);
+          if (!val.trim()) return;
+          await addChapter(currentView.subject.id, val.trim());
           setPromptDialog((prev) => ({ ...prev, isOpen: false }));
-          showToast('নতুন অধ্যায় যোগ হয়েছে');
+          showToast('নতুন অধ্যায় যুক্ত হয়েছে');
           loadData();
         },
       });
     } else if (currentView.level === 'topics') {
-      const chapter = currentView.chapter;
       setPromptDialog({
         isOpen: true,
-        title: 'নতুন টপিক যোগ করুন',
+        title: 'নতুন টপিক',
         initialValue: '',
         onConfirm: async (val) => {
-          await addTopic(chapter.id, val);
+          if (!val.trim()) return;
+          await addTopic(currentView.chapter.id, val.trim());
           setPromptDialog((prev) => ({ ...prev, isOpen: false }));
-          showToast('নতুন টপিক যোগ হয়েছে');
+          showToast('নতুন টপিক যুক্ত হয়েছে');
           loadData();
         },
       });
@@ -415,38 +639,44 @@ export const CollectionScreen: React.FC = () => {
     }
   };
 
-  // Rename Level Parent / Self Item
-  const handleRenameItem = (type: 'subject' | 'chapter' | 'topic', id: string, currentName: string) => {
+  // Rename Item
+  const handleRenameItem = (
+    type: 'subject' | 'chapter' | 'topic',
+    id: string,
+    currentName: string
+  ) => {
     setPromptDialog({
       isOpen: true,
-      title: 'নাম পরিবর্তন করুন',
+      title: `${type === 'subject' ? 'বিষয়' : type === 'chapter' ? 'অধ্যায়' : 'টপিক'} নাম পরিবর্তন`,
       initialValue: currentName,
-      onConfirm: async (newName) => {
-        if (type === 'subject') await updateSubject(id, newName);
-        else if (type === 'chapter') await updateChapter(id, newName);
-        else if (type === 'topic') await updateTopic(id, newName);
-
+      onConfirm: async (val) => {
+        if (!val.trim()) return;
+        if (type === 'subject') await updateSubject(id, val.trim());
+        if (type === 'chapter') await updateChapter(id, val.trim());
+        if (type === 'topic') await updateTopic(id, val.trim());
         setPromptDialog((prev) => ({ ...prev, isOpen: false }));
-        showToast('নাম সফলভাবে পরিবর্তন হয়েছে');
+        showToast('নাম পরিবর্তন সম্পন্ন হয়েছে');
         loadData();
       },
     });
   };
 
-  // Delete Level Item
-  const handleDeleteItem = (type: 'subject' | 'chapter' | 'topic', id: string, name: string) => {
-    const label = type === 'subject' ? 'বিষয়' : type === 'chapter' ? 'অধ্যায়' : 'টপিক';
+  // Delete Item
+  const handleDeleteItem = (
+    type: 'subject' | 'chapter' | 'topic',
+    id: string,
+    name: string
+  ) => {
     setConfirmDialog({
       isOpen: true,
-      title: `${label} মুছবেন?`,
-      message: `"${name}" ${label}টি মুছে ফেললে এর ভেতরের সকল তথ্য ও প্রশ্ন স্থায়ীভাবে মুছে যাবে। আপনি কি নিশ্চিত?`,
+      title: `${type === 'subject' ? 'বিষয়' : type === 'chapter' ? 'অধ্যায়' : 'টপিক'} মুছবেন?`,
+      message: `"${name}" এবং এর অন্তর্গত সকল ডাটা মুছে ফেলতে চান?`,
       onConfirm: async () => {
         if (type === 'subject') await deleteSubject(id);
-        else if (type === 'chapter') await deleteChapter(id);
-        else if (type === 'topic') await deleteTopic(id);
-
+        if (type === 'chapter') await deleteChapter(id);
+        if (type === 'topic') await deleteTopic(id);
         setConfirmDialog((prev) => ({ ...prev, isOpen: false }));
-        showToast(`${label} মুছে ফেলা হয়েছে`);
+        showToast('মুছে ফেলা হয়েছে');
 
         if (
           (type === 'chapter' && currentView.level === 'topics' && currentView.chapter.id === id) ||
@@ -460,35 +690,14 @@ export const CollectionScreen: React.FC = () => {
     });
   };
 
-  // Top Bar Breadcrumb path string
-  const breadcrumbString = useMemo(() => {
-    if (currentView.level === 'subjects') {
-      return '';
-    }
-    if (currentView.level === 'chapters') {
-      return `${toBnPad2(currentView.subject.order)}. ${currentView.subject.name}`;
-    }
-    if (currentView.level === 'topics') {
-      return `${toBnPad2(currentView.subject.order)}. ${currentView.subject.name} › ${toBnPad2(
-        currentView.chapter.order
-      )}. ${currentView.chapter.name}`;
-    }
-    if (currentView.level === 'questions') {
-      return `${toBnPad2(currentView.subject.order)}. ${currentView.subject.name} › ${toBnPad2(
-        currentView.chapter.order
-      )}. ${currentView.chapter.name} › ${toBnPad2(currentView.topic.order)}. ${currentView.topic.name}`;
-    }
-    return '';
-  }, [currentView]);
-
   // Current view title
   const currentTitle = useMemo(() => {
     if (currentView.level === 'subjects') return 'বিষয় তালিকা (Subjects)';
     if (currentView.level === 'chapters') return currentView.subject.name;
     if (currentView.level === 'topics') return currentView.chapter.name;
     if (currentView.level === 'questions') return currentView.topic.name;
-    return 'কালেকশন';
-  }, [currentView]);
+    return scope === 'chapter' ? 'Chapter CQ' : 'Type CQ';
+  }, [currentView, scope]);
 
   // Header KebabMenu Items
   const headerMenuItems = useMemo((): MenuItem[] => {
@@ -507,7 +716,25 @@ export const CollectionScreen: React.FC = () => {
       onClick: handleOpenAddDialog,
     });
 
-    // Rename & Delete for active screen container (if inside a chapter/topic/subject)
+    if (currentView.level === 'questions') {
+      items.push({
+        id: 'paste-json',
+        label: 'JSON পেস্ট করে প্রশ্ন যোগ',
+        icon: <Upload className="w-4 h-4 text-[#3B4FD8]" />,
+        onClick: () => setShowPasteModal(true),
+      });
+      items.push({
+        id: 'paste-copied',
+        label:
+          multiClipCount > 0
+            ? `${multiClipMode === 'cut' ? 'কাট' : 'কপি'} করা প্রশ্ন পেস্ট করুন (${toBn(multiClipCount)}টি)`
+            : 'কপি/কাট করা প্রশ্ন পেস্ট করুন',
+        icon: <ClipboardPaste className="w-4 h-4 text-emerald-600" />,
+        onClick: handlePasteMultiAtEnd,
+      });
+    }
+
+    // Rename & Delete for active screen container
     if (currentView.level === 'chapters') {
       items.push({
         id: 'rename-subj',
@@ -556,24 +783,24 @@ export const CollectionScreen: React.FC = () => {
     if (currentView.level === 'subjects') {
       items.push({
         id: 'import',
-        label: 'Import Question Collection',
+        label: scope === 'chapter' ? 'Import Chapter CQ' : 'Import Type CQ',
         icon: <Upload className="w-4 h-4 text-[#3B4FD8]" />,
         onClick: () => setShowImportModal(true),
       });
       items.push({
         id: 'export',
-        label: 'Export Question Collection',
+        label: scope === 'chapter' ? 'Export Chapter CQ' : 'Export Type CQ',
         icon: <Download className="w-4 h-4 text-[#3B4FD8]" />,
         onClick: async () => {
           try {
-            const ok = await exportQuestionCollection();
+            const ok = await exportQuestionCollection(scope);
             if (ok) {
-              showToast('প্রশ্ন কালেকশন সফলভাবে এক্সপোর্ট হয়েছে');
+              showToast(`${scope === 'chapter' ? 'Chapter CQ' : 'Type CQ'} সফলভাবে এক্সপোর্ট হয়েছে`);
             } else {
-              showToast('কালেকশন এক্সপোর্ট করা যায়নি');
+              showToast('এক্সপোর্ট করা যায়নি');
             }
           } catch {
-            showToast('কালেকশন এক্সপোর্ট ব্যর্থ হয়েছে');
+            showToast('এক্সপোর্ট করা যায়নি');
           }
         },
       });
@@ -589,7 +816,7 @@ export const CollectionScreen: React.FC = () => {
     });
 
     return items;
-  }, [currentView, showToast]);
+  }, [currentView, showToast, scope]);
 
   // Filter questions by search query
   const filteredQuestionGroups = useMemo(() => {
@@ -624,6 +851,75 @@ export const CollectionScreen: React.FC = () => {
       .filter(Boolean) as StimulusWithQuestions[];
   }, [questionGroups, searchQuery]);
 
+  // Construct Breadcrumb Items (Requirement 7)
+  const breadcrumbItems = useMemo(() => {
+    const items: Array<{
+      id: string;
+      label: string;
+      isCurrent: boolean;
+      onClick?: () => void;
+    }> = [];
+
+    // Level 0: Home / Subjects
+    items.push({
+      id: 'subjects',
+      label: currentView.level === 'subjects' ? '🏠 বিষয়সমূহ' : '🏠',
+      isCurrent: currentView.level === 'subjects',
+      onClick:
+        currentView.level === 'subjects'
+          ? undefined
+          : () => setCurrentView({ level: 'subjects' }),
+    });
+
+    // Level 1: Subject
+    if (
+      currentView.level === 'chapters' ||
+      currentView.level === 'topics' ||
+      currentView.level === 'questions'
+    ) {
+      const s = currentView.subject;
+      const label = `${toBnPad2(s.order)}. ${s.name}`;
+      items.push({
+        id: `subject-${s.id}`,
+        label,
+        isCurrent: currentView.level === 'chapters',
+        onClick:
+          currentView.level === 'chapters'
+            ? undefined
+            : () => setCurrentView({ level: 'chapters', subject: s }),
+      });
+    }
+
+    // Level 2: Chapter
+    if (currentView.level === 'topics' || currentView.level === 'questions') {
+      const c = currentView.chapter;
+      const label = `${toBnPad2(c.order)}. ${c.name}`;
+      items.push({
+        id: `chapter-${c.id}`,
+        label,
+        isCurrent: currentView.level === 'topics' || (scope === 'chapter' && currentView.level === 'questions'),
+        onClick:
+          currentView.level === 'topics' || (scope === 'chapter' && currentView.level === 'questions')
+            ? undefined
+            : () => openChapter(currentView.subject, c),
+      });
+    }
+
+    // Level 3: Topic (Chapter CQ has no visible topic level)
+    if (currentView.level === 'questions' && scope !== 'chapter') {
+      const t = currentView.topic;
+      const label = `${toBnPad2(t.order)}. ${t.name}`;
+      items.push({
+        id: `topic-${t.id}`,
+        label,
+        isCurrent: true,
+        onClick: undefined,
+      });
+    }
+
+    return items;
+  }, [currentView, scope, openChapter]);
+
   return (
     <div className="flex-1 flex flex-col min-h-full pb-20 bg-[#F2F4F8]">
       {/* Top Header */}
@@ -634,18 +930,43 @@ export const CollectionScreen: React.FC = () => {
         menuItems={headerMenuItems}
       />
 
-      {/* Top Control Bar (Breadcrumbs, Reorder, Selection Counter) */}
-      <div className="bg-white border-b border-[#D5D9E2] px-3.5 py-2.5 shadow-2xs space-y-2">
-        {/* Breadcrumb Path (when inside hierarchy) */}
-        {breadcrumbString && (
-          <div className="flex items-center gap-1.5 text-xs text-[#2A3BB0] font-medium overflow-x-auto whitespace-nowrap no-scrollbar py-0.5">
-            <FolderOpen className="w-3.5 h-3.5 shrink-0 text-[#3B4FD8]" />
-            <span className="truncate">{breadcrumbString}</span>
-          </div>
-        )}
+      {/* Top Control Bar (Requirement 7: Horizontal Scrollable Breadcrumb) */}
+      <div className="bg-white border-b border-[#D5D9E2] px-3.5 py-2 shadow-2xs space-y-2">
+        {/* Breadcrumb Path on all levels */}
+        <div
+          ref={breadcrumbContainerRef}
+          className="flex items-center gap-1 overflow-x-auto whitespace-nowrap no-scrollbar py-0.5 scroll-smooth"
+          style={{
+            WebkitOverflowScrolling: 'touch',
+            scrollbarWidth: 'none',
+            msOverflowStyle: 'none',
+          }}
+        >
+          {breadcrumbItems.map((item, idx) => (
+            <React.Fragment key={item.id}>
+              {idx > 0 && (
+                <span className="text-[#94A3B8] text-xs px-1 select-none shrink-0 font-bold">
+                  ›
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={item.isCurrent}
+                onClick={item.onClick}
+                className={`min-h-[44px] px-2 py-1 rounded-lg text-xs flex items-center shrink-0 transition-colors ${
+                  item.isCurrent
+                    ? 'font-bold text-[#1B1F2A] cursor-default pointer-events-none'
+                    : 'text-[#2A3BB0] hover:bg-[#EEF2FF] font-medium active:bg-[#E0E7FF]'
+                }`}
+              >
+                {item.label}
+              </button>
+            </React.Fragment>
+          ))}
+        </div>
 
         {/* Action Row */}
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center justify-between gap-2 pt-0.5">
           {/* Left: Reorder button (for lists) or Selection info */}
           {currentView.level !== 'questions' ? (
             <button
@@ -673,7 +994,7 @@ export const CollectionScreen: React.FC = () => {
           ) : (
             <div className="flex items-center gap-2">
               <span className="px-2.5 py-1 rounded-full bg-[#EEF2FF] text-[#2A3BB0] text-xs font-bold border border-[#D5D9E2]">
-                {toBn(selectedIds.length)} নির্বাচিত
+                {toBn(selectedStimuliCount)} নির্বাচিত
               </span>
               {selectedIds.length > 0 && (
                 <button
@@ -687,12 +1008,12 @@ export const CollectionScreen: React.FC = () => {
             </div>
           )}
 
-          {/* Right: Quick Total Counter */}
+          {/* Right: Quick Total Counter (Requirement 3: "মোট প্রশ্ন: ...টি") */}
           <div className="text-xs text-[#64748B] font-medium">
             {currentView.level === 'subjects' && `মোট বিষয়: ${toBn(subjects.length)}টি`}
             {currentView.level === 'chapters' && `মোট অধ্যায়: ${toBn(chapters.length)}টি`}
             {currentView.level === 'topics' && `মোট টপিক: ${toBn(topics.length)}টি`}
-            {currentView.level === 'questions' && `মোট গ্রুপ: ${toBn(filteredQuestionGroups.length)}টি`}
+            {currentView.level === 'questions' && `মোট প্রশ্ন: ${toBn(filteredQuestionGroups.length)}টি`}
           </div>
         </div>
 
@@ -769,12 +1090,12 @@ export const CollectionScreen: React.FC = () => {
                       <h2 className="text-sm font-bold text-[#1B1F2A] truncate leading-snug">
                         {subject.name}
                       </h2>
-                      <p className="text-[11px] text-[#64748B] font-medium mt-0.5">
+                      <p className="text-[0.6875rem] text-[#64748B] font-medium mt-0.5">
                         {toBn(subStat.total)}টি প্রশ্ন · {toBn(subStat.selected)} নির্বাচিত
                       </p>
                     </div>
 
-                    {/* Right: Reorder Buttons or Kebab Menu + Chevron */}
+                    {/* Right: Reorder or Kebab + Chevron */}
                     <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                       {isReordering ? (
                         <div className="flex items-center gap-1">
@@ -830,7 +1151,7 @@ export const CollectionScreen: React.FC = () => {
           <div className="space-y-2.5">
             {chapters.length === 0 ? (
               <div className="bg-white rounded-2xl p-8 text-center border border-[#D5D9E2] space-y-3">
-                <p className="text-sm text-[#64748B]">এই বিষয়ে এখনো অধ্যায় নেই</p>
+                <p className="text-sm text-[#64748B]">এই বিষয়ে এখনো কোনো অধ্যায় নেই</p>
                 <button
                   type="button"
                   onClick={handleOpenAddDialog}
@@ -841,7 +1162,7 @@ export const CollectionScreen: React.FC = () => {
               </div>
             ) : (
               chapters.map((chapter, index) => {
-                const chapStat = stats.chapterStats[chapter.id] || { total: 0, selected: 0 };
+                const chStat = stats.chapterStats[chapter.id] || { total: 0, selected: 0 };
                 const padOrder = toBnPad2(chapter.order || index + 1);
 
                 return (
@@ -850,11 +1171,7 @@ export const CollectionScreen: React.FC = () => {
                     className="bg-white rounded-2xl p-3.5 border border-[#D5D9E2] shadow-xs flex items-center justify-between gap-3 hover:border-[#3B4FD8] transition-all cursor-pointer select-none"
                     onClick={() => {
                       if (!isReordering) {
-                        setCurrentView({
-                          level: 'topics',
-                          subject: currentView.subject,
-                          chapter,
-                        });
+                        openChapter(currentView.subject, chapter);
                       }
                     }}
                   >
@@ -868,8 +1185,8 @@ export const CollectionScreen: React.FC = () => {
                       <h2 className="text-sm font-bold text-[#1B1F2A] truncate leading-snug">
                         {chapter.name}
                       </h2>
-                      <p className="text-[11px] text-[#64748B] font-medium mt-0.5">
-                        {toBn(chapStat.total)}টি প্রশ্ন · {toBn(chapStat.selected)} নির্বাচিত
+                      <p className="text-[0.6875rem] text-[#64748B] font-medium mt-0.5">
+                        {toBn(chStat.total)}টি প্রশ্ন · {toBn(chStat.selected)} নির্বাচিত
                       </p>
                     </div>
 
@@ -968,7 +1285,7 @@ export const CollectionScreen: React.FC = () => {
                       <h2 className="text-sm font-bold text-[#1B1F2A] truncate leading-snug">
                         {topic.name}
                       </h2>
-                      <p className="text-[11px] text-[#64748B] font-medium mt-0.5">
+                      <p className="text-[0.6875rem] text-[#64748B] font-medium mt-0.5">
                         {toBn(topStat.total)}টি প্রশ্ন · {toBn(topStat.selected)} নির্বাচিত
                       </p>
                     </div>
@@ -1024,9 +1341,41 @@ export const CollectionScreen: React.FC = () => {
           </div>
         )}
 
-        {/* ---------------- LEVEL 3: QUESTIONS LIST ---------------- */}
+        {/* ---------------- LEVEL 3: QUESTIONS LIST (Requirement 3) ---------------- */}
         {!loading && currentView.level === 'questions' && (
           <div className="space-y-4">
+            {/* Clipboard Notice Bar */}
+            {multiClipCount > 0 && (
+              <div className="bg-[#ECFDF5] border border-emerald-500 rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs text-emerald-800 font-bold shadow-2xs">
+                <span>
+                  {toBn(multiClipCount)}টি প্রশ্ন {multiClipMode === 'cut' ? 'কাট' : 'কপি'} করা আছে — প্রশ্নের মেনু থেকে "Paste after / before" বা রিবন মেনু থেকে পেস্ট করুন
+                </span>
+                <button
+                  type="button"
+                  aria-label="ক্লিপবোর্ড খালি করুন"
+                  onClick={handleClearClipboard}
+                  className="w-7 h-7 shrink-0 rounded-full flex items-center justify-center hover:bg-white/80 text-emerald-700 font-bold text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            {groupClipboard && multiClipCount === 0 && (
+              <div className="bg-[#EEF2FF] border border-[#3B4FD8] rounded-xl px-3.5 py-2.5 flex items-center justify-between text-xs text-[#2A3BB0] font-bold shadow-2xs">
+                <span>
+                  ১টি প্রশ্ন {groupClipboard.mode === 'cut' ? 'কাট' : 'কপি'} করা আছে
+                </span>
+                <button
+                  type="button"
+                  aria-label="ক্লিপবোর্ড খালি করুন"
+                  onClick={handleClearClipboard}
+                  className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-white/80 text-[#3B4FD8] font-bold text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
             {filteredQuestionGroups.length === 0 ? (
               <div className="bg-white rounded-2xl p-8 text-center border border-[#D5D9E2] space-y-3">
                 <p className="text-sm font-semibold text-[#1B1F2A]">
@@ -1050,225 +1399,312 @@ export const CollectionScreen: React.FC = () => {
                 </button>
               </div>
             ) : (
-              filteredQuestionGroups.map((grp, grpIdx) => (
-                <section
-                  key={grp.stimulus?.id || `group-${grpIdx}`}
-                  className="bg-white rounded-xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5"
-                >
-                  {/* Stimulus Section if present */}
-                  {grp.stimulus && (
-                    <div className="p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-[#2A3BB0]">উদ্দীপক</span>
-                        {grp.stimulus.boardTag && (
-                          <span className="px-2 py-0.5 rounded-md bg-[#EEF2FF] text-[#3B4FD8] font-bold text-[11px] border border-[#D5D9E2]">
-                            বোর্ড: {grp.stimulus.boardTag}
-                          </span>
-                        )}
+              filteredQuestionGroups.map((grp, grpIdx) => {
+                const groupQuestionIds = grp.questions.map((q) => q.id);
+                const allGroupSelected =
+                  groupQuestionIds.length > 0 &&
+                  groupQuestionIds.every((id) => selectedIds.includes(id));
+
+                // Calculate average rating of questions in group
+                const avgRating =
+                  grp.questions.length > 0
+                    ? Math.round(
+                        grp.questions.reduce((sum, q) => sum + (q.rating || 3), 0) /
+                          grp.questions.length
+                      )
+                    : 3;
+                const starsText = getRatingStarsText(avgRating);
+
+                // Collect usage chips & board chips for group
+                const allBoards: Array<{ board: string; years: number[] }> = [];
+                const allUsages: QuestionPaperUsage[] = [];
+
+                // boards of the stimulus + of every question, same board merged (years combined)
+                const addBoardUsage = (b: { board: string; years: number[] }) => {
+                  const ex = allBoards.find((x) => x.board === b.board);
+                  if (ex) {
+                    ex.years = Array.from(new Set([...ex.years, ...(b.years || [])])).sort((x, y) => x - y);
+                  } else {
+                    allBoards.push({ board: b.board, years: [...(b.years || [])] });
+                  }
+                };
+                (grp.stimulus?.usedInBoards || []).forEach(addBoardUsage);
+
+                grp.questions.forEach((q) => {
+                  (q.usedInBoards || []).forEach(addBoardUsage);
+                  const usages = questionUsages[q.id] || [];
+                  usages.forEach((u) => {
+                    if (!allUsages.some((ex) => ex.paperId === u.paperId)) {
+                      allUsages.push(u);
+                    }
+                  });
+                });
+
+                return (
+                  <article
+                    key={grp.stimulus?.id || `group-${grpIdx}`}
+                    data-qids={groupQuestionIds.join(' ')}
+                    className="bg-white rounded-2xl border-[1.5px] border-[#3B4FD8] shadow-xs overflow-hidden mb-4"
+                  >
+                    {/* Top Ribbon (Full width, bg #3B4FD8, rounded-t-2xl, white text & icons) */}
+                    <div className="bg-[#3B4FD8] text-white px-3.5 py-2.5 flex items-center justify-between gap-2 rounded-t-2xl">
+                      {/* Left side: Serial, Checkbox, Rating Badge */}
+                      <div className="flex items-center gap-2.5">
+                        {/* 1. Serial: "প্রশ্ন ১" */}
+                        <span className="font-bold text-xs text-white tracking-tight shrink-0">
+                          প্রশ্ন {toBn(grpIdx + 1)}
+                        </span>
+
+                        {/* 2. Checkbox: White border, checkmark when selected */}
+                        <button
+                          type="button"
+                          aria-label={
+                            allGroupSelected
+                              ? 'এই উদ্দীপকের সব প্রশ্ন বাতিল করুন'
+                              : 'এই উদ্দীপকের সব প্রশ্ন নির্বাচন করুন'
+                          }
+                          onClick={() => handleToggleStimulusGroup(grp)}
+                          className="min-h-[44px] min-w-[44px] -my-2 flex items-center justify-center rounded-lg text-white hover:bg-white/10 active:bg-white/20 transition-colors"
+                        >
+                          <div
+                            className={`w-5 h-5 rounded border-2 border-white flex items-center justify-center transition-colors ${
+                              allGroupSelected ? 'bg-white text-[#3B4FD8]' : 'bg-transparent text-transparent'
+                            }`}
+                          >
+                            <Check className="w-3.5 h-3.5 stroke-[3]" />
+                          </div>
+                        </button>
+
+                        {/* 3. Rating Badge: Yellowish bg with dark brownish text */}
+                        <span className="px-2 py-0.5 rounded-md bg-[#FEF9C3] text-[#713F12] text-[0.625rem] font-bold border border-[#FDE047] whitespace-nowrap shadow-2xs">
+                          {starsText}
+                        </span>
                       </div>
 
-                      {/* Stimulus Text */}
-                      <RichText text={grp.stimulus.text} className="text-sm font-medium leading-relaxed" />
+                      {/* 4. Right side: Three-dot Kebab Menu (44px touch area, white icon) */}
+                      <KebabMenu
+                        buttonAriaLabel="মেনু"
+                        buttonClassName="text-white hover:bg-white/20 active:bg-white/30"
+                        items={[
+                          {
+                            id: 'edit',
+                            label: 'Edit this Q&A',
+                            icon: <FileEdit className="w-4 h-4 text-[#3B4FD8]" />,
+                            onClick: () => handleEditGroup(grp),
+                          },
+                          {
+                            id: 'reference',
+                            label: 'রেফারেন্স দেখুন',
+                            icon: <BookMarked className="w-4 h-4 text-[#3B4FD8]" />,
+                            onClick: () =>
+                              setReferenceView({ isOpen: true, text: grp.stimulus?.reference || '' }),
+                          },
+                          {
+                            id: 'copy',
+                            label: 'Copy',
+                            icon: <Copy className="w-4 h-4 text-[#3B4FD8]" />,
+                            onClick: () => handleCopyOrCutGroup(grp, 'copy'),
+                          },
+                          {
+                            id: 'cut',
+                            label: 'Cut',
+                            icon: <Scissors className="w-4 h-4 text-amber-600" />,
+                            onClick: () => handleCopyOrCutGroup(grp, 'cut'),
+                          },
+                          {
+                            id: 'paste-after',
+                            label: 'Paste after',
+                            icon: <Plus className="w-4 h-4 text-[#2A3BB0]" />,
+                            onClick: () => handlePasteGroup(grp, 'after'),
+                          },
+                          {
+                            id: 'paste-before',
+                            label: 'Paste before',
+                            icon: <Plus className="w-4 h-4 text-[#2A3BB0]" />,
+                            onClick: () => handlePasteGroup(grp, 'before'),
+                          },
+                          {
+                            id: 'delete',
+                            label: 'Delete',
+                            icon: <Trash2 className="w-4 h-4 text-red-500" />,
+                            isDestructive: true,
+                            onClick: () => handleDeleteGroupPrompt(grp),
+                          },
+                        ]}
+                      />
+                    </div>
 
-                      {/* Stimulus Image from Blob URL */}
-                      {grp.stimulus.imageIds &&
-                        grp.stimulus.imageIds.map((imgId) => {
-                          const url = imageUrls[imgId];
-                          if (!url) return null;
+                    {/* Chips Row: Board Tags & Paper Usages (light gray background) */}
+                    <div className="bg-[#F8FAFC] border-b border-[#E2E8F0] px-3.5 py-2 flex flex-wrap items-center gap-1.5">
+                      {/* Board Tag Chips */}
+                      {allBoards.length > 0 ? (
+                        allBoards.map((b, bIdx) => (
+                          <span
+                            key={bIdx}
+                            className="px-2 py-0.5 rounded bg-white text-[#1B1F2A] text-[0.625rem] font-semibold border border-[#D5D9E2] flex items-center gap-1 shadow-2xs"
+                          >
+                            <Tag className="w-3 h-3 text-[#64748B]" />
+                            <span>
+                              {b.board}'{b.years.map((y) => toBn(String(y).slice(-2))).join(',')}
+                            </span>
+                          </span>
+                        ))
+                      ) : grp.stimulus?.boardTag ? (
+                        <span className="px-2 py-0.5 rounded bg-white text-[#1B1F2A] text-[0.625rem] font-semibold border border-[#D5D9E2] flex items-center gap-1 shadow-2xs">
+                          <Tag className="w-3 h-3 text-[#64748B]" />
+                          <span>{grp.stimulus.boardTag}</span>
+                        </span>
+                      ) : null}
+
+                      {/* Paper Usages Chips */}
+                      {allUsages.map((u) => (
+                        <span
+                          key={u.paperId}
+                          className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 text-[0.625rem] font-bold border border-emerald-200 flex items-center gap-1"
+                        >
+                          <Award className="w-3 h-3 text-emerald-600" />
+                          <span>
+                            {u.shortName} ×{toBn(u.count)}
+                          </span>
+                        </span>
+                      ))}
+
+                      {allBoards.length === 0 && !grp.stimulus?.boardTag && allUsages.length === 0 && (
+                        <span className="text-[0.625rem] text-[#94A3B8] italic">ট্যাগ নেই</span>
+                      )}
+                    </div>
+
+                    {/* Card Content Area: Stimulus -> Image -> Sub-questions */}
+                    <div className="p-3.5 space-y-3.5">
+                      {/* Stimulus Text & Image */}
+                      {grp.stimulus && (
+                        <div className="space-y-2">
+                          <RichText
+                            text={grp.stimulus.text}
+                            className="text-xs font-medium text-[#1B1F2A] leading-relaxed"
+                          />
+
+                          {grp.stimulus.imageIds?.map((imgId) => {
+                            const url = imageUrls[imgId];
+                            if (!url) return null;
+                            return (
+                              <div
+                                key={imgId}
+                                className="w-full my-2 overflow-hidden rounded-xl border border-[#D5D9E2] bg-white text-center"
+                              >
+                                <img
+                                  src={url}
+                                  alt="উদ্দীপকের চিত্র"
+                                  className="w-full h-auto object-contain max-h-60 mx-auto"
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Sub-questions (গ, ঘ, etc.) */}
+                      <div className="space-y-3 pt-1 border-t border-[#F2F4F8]">
+                        {grp.questions.map((question) => {
+                          const isSolutionOpen = expandedSolutions[question.id] || false;
+                          const solutionUrls = (question.solutionImageIds || [])
+                            .map((id) => imageUrls[id])
+                            .filter(Boolean) as string[];
+
                           return (
-                            <div key={imgId} className="w-full my-2 overflow-hidden rounded-xl border border-[#D5D9E2] bg-white">
-                              <img src={url} alt="উদ্দীপকের চিত্র" className="w-full h-auto object-contain max-h-64" />
+                            <div key={question.id} className="space-y-2">
+                              {/* Question line: plain "গ." or "ঘ." in front */}
+                              <div className="flex items-start gap-1.5 text-xs text-[#1B1F2A]">
+                                <span className="font-bold shrink-0 text-[#1B1F2A]">
+                                  {question.type ? `${question.type}.` : ''}
+                                </span>
+                                <RichText
+                                  text={question.questionText}
+                                  className="text-xs text-[#1B1F2A] leading-relaxed flex-1 font-medium"
+                                />
+                              </div>
+
+                              {/* "সমাধান দেখো" button + the boards this question (গ / ঘ) came in */}
+                              <div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <button
+                                    type="button"
+                                    aria-label={isSolutionOpen ? 'সমাধান লুকান' : 'সমাধান দেখুন'}
+                                    onClick={() =>
+                                      setExpandedSolutions((prev) => ({
+                                        ...prev,
+                                        [question.id]: !isSolutionOpen,
+                                      }))
+                                    }
+                                    className="min-h-[34px] px-2.5 py-1 rounded-lg border border-[#D5D9E2] bg-white hover:bg-[#F2F4F8] text-[0.6875rem] font-semibold text-[#2A3BB0] flex items-center gap-1 transition-colors shrink-0"
+                                  >
+                                    {isSolutionOpen ? (
+                                      <>
+                                        <EyeOff className="w-3.5 h-3.5" />
+                                        <span>সমাধান লুকাও</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Eye className="w-3.5 h-3.5" />
+                                        <span>সমাধান দেখো</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <QuestionBoardTags boards={question.usedInBoards} />
+                                </div>
+
+                                {/* Solution expansion */}
+                                {isSolutionOpen && (
+                                  <div className="mt-2.5 p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-2 animate-in fade-in duration-150">
+                                    <div className="text-[0.6875rem] font-bold text-[#2A3BB0] uppercase tracking-wider">
+                                      সমাধান:
+                                    </div>
+                                    <RichText
+                                      text={question.solutionText}
+                                      className="text-xs text-[#1B1F2A] leading-relaxed"
+                                    />
+
+                                    {/* Solution images - Tapping opens full-screen zoomable viewer (Requirement 4) */}
+                                    {solutionUrls.length > 0 && (
+                                      <div className="space-y-2 pt-1">
+                                        {solutionUrls.map((url, imgIdx) => (
+                                          <div
+                                            key={imgIdx}
+                                            onClick={() =>
+                                              handleOpenImageViewer(solutionUrls, imgIdx)
+                                            }
+                                            className="w-full overflow-hidden rounded-xl border border-[#D5D9E2] bg-white cursor-pointer hover:opacity-95 transition-opacity"
+                                            title="পূর্ণ স্ক্রিনে দেখতে ট্যাপ করুন"
+                                          >
+                                            <img
+                                              src={url}
+                                              alt="সমাধান চিত্র"
+                                              className="w-full h-auto object-contain max-h-56 mx-auto"
+                                            />
+                                          </div>
+                                        ))}
+                                        <p className="text-[0.625rem] text-[#64748B] text-center italic">
+                                          (ছবিতে ট্যাপ করে বড় ও জুম করে দেখুন)
+                                        </p>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           );
                         })}
+                      </div>
                     </div>
-                  )}
-
-                  {/* Question Cards (গ, ঘ, etc.) */}
-                  <div className="space-y-3 pt-1">
-                    {grp.questions.map((question: Question, qIdx: number) => {
-                      const isSelected = selectedIds.includes(question.id);
-                      const usages = questionUsages[question.id] || [];
-                      const starsText = getRatingStarsText(question.rating);
-                      const isSolutionOpen = expandedSolutions[question.id] || false;
-
-                      return (
-                        <article
-                          key={question.id}
-                          className={`p-3.5 rounded-xl border transition-all ${
-                            isSelected
-                              ? 'border-[#3B4FD8] bg-[#EEF2FF]/25 ring-1 ring-[#3B4FD8]'
-                              : 'border-[#D5D9E2] bg-white'
-                          }`}
-                        >
-                          {/* Top Row: Serial Circle, Checkbox, Rating Badge, Kebab Menu */}
-                          <div className="flex items-center justify-between gap-2 pb-2.5 mb-2 border-b border-[#F2F4F8]">
-                            <div className="flex items-center gap-2">
-                              {/* Serial circle */}
-                              <span className="w-7 h-7 rounded-full bg-[#3B4FD8] text-white text-xs font-bold flex items-center justify-center shrink-0">
-                                {toBn(qIdx + 1)}
-                              </span>
-
-                              {/* Checkbox with minimum 44px tap target */}
-                              <button
-                                type="button"
-                                aria-label={isSelected ? 'প্রশ্ন নির্বাচন বাতিল করুন' : 'প্রশ্ন নির্বাচন করুন'}
-                                onClick={() => handleToggleSelect(question.id)}
-                                className="min-h-[44px] min-w-[44px] -my-2 flex items-center justify-center text-[#3B4FD8] hover:bg-[#EEF2FF] rounded-lg transition-colors"
-                              >
-                                {isSelected ? (
-                                  <CheckSquare className="w-5 h-5 fill-[#3B4FD8] text-white" />
-                                ) : (
-                                  <Square className="w-5 h-5 text-[#64748B]" />
-                                )}
-                              </button>
-
-                              {/* Rating Badge: Yellowish background with dark brownish text */}
-                              <span className="px-2.5 py-0.5 rounded-md bg-[#FEF9C3] text-[#713F12] text-[11px] font-bold border border-[#FDE047] whitespace-nowrap shadow-2xs">
-                                {starsText}
-                              </span>
-                            </div>
-
-                            {/* Question Level Three-Dot Kebab Menu */}
-                            <KebabMenu
-                              items={[
-                                {
-                                  id: 'copy',
-                                  label: 'Copy',
-                                  icon: <Copy className="w-4 h-4 text-[#3B4FD8]" />,
-                                  onClick: () => handleCopyQuestion(question.id),
-                                },
-                                {
-                                  id: 'paste-after',
-                                  label: 'Paste after',
-                                  icon: <Plus className="w-4 h-4 text-[#2A3BB0]" />,
-                                  onClick: () => handlePasteAfterQuestion(question.id),
-                                },
-                                {
-                                  id: 'edit',
-                                  label: 'Edit',
-                                  icon: <FileEdit className="w-4 h-4 text-[#64748B]" />,
-                                  onClick: () =>
-                                    setQuestionFormState({
-                                      isOpen: true,
-                                      initialTopicId: question.topicId,
-                                      editQuestionId: question.id,
-                                    }),
-                                },
-                                {
-                                  id: 'delete',
-                                  label: 'Delete',
-                                  icon: <Trash2 className="w-4 h-4 text-red-500" />,
-                                  isDestructive: true,
-                                  onClick: () => handleDeleteQuestion(question.id),
-                                },
-                              ]}
-                            />
-                          </div>
-
-                          {/* Usage Tags Row: Board Chips & My Paper Chips */}
-                          <div className="flex flex-wrap items-center gap-1.5 mb-2.5">
-                            {/* Board Chips */}
-                            {question.usedInBoards && question.usedInBoards.length > 0 ? (
-                              question.usedInBoards.map((b, bIdx) => (
-                                <span
-                                  key={bIdx}
-                                  className="px-2 py-0.5 rounded bg-[#F2F4F8] text-[#1B1F2A] text-[11px] font-medium border border-[#D5D9E2] flex items-center gap-1"
-                                >
-                                  <Tag className="w-3 h-3 text-[#64748B]" />
-                                  <span>
-                                    {b.board}'{b.years.map((y) => toBn(String(y).slice(-2))).join(',')}
-                                  </span>
-                                </span>
-                              ))
-                            ) : grp.stimulus?.boardTag ? (
-                              <span className="px-2 py-0.5 rounded bg-[#F2F4F8] text-[#1B1F2A] text-[11px] font-medium border border-[#D5D9E2] flex items-center gap-1">
-                                <Tag className="w-3 h-3 text-[#64748B]" />
-                                <span>{grp.stimulus.boardTag}</span>
-                              </span>
-                            ) : null}
-
-                            {/* Paper usage chips */}
-                            {usages.map((u) => (
-                              <span
-                                key={u.paperId}
-                                className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 text-[11px] font-bold border border-emerald-200 flex items-center gap-1"
-                              >
-                                <Award className="w-3 h-3 text-emerald-600" />
-                                <span>{u.shortName} ×{toBn(u.count)}</span>
-                              </span>
-                            ))}
-                          </div>
-
-                          {/* Question Text with Type & Marks Badge */}
-                          <div className="space-y-1.5 mb-3">
-                            <div className="flex items-center gap-1.5">
-                              <span className="px-2 py-0.5 rounded-md bg-[#3B4FD8] text-white text-[11px] font-bold">
-                                {question.type} · {toBn(question.marks)}
-                              </span>
-                            </div>
-                            <RichText text={question.questionText} className="text-sm font-semibold text-[#1B1F2A]" />
-                          </div>
-
-                          {/* Solution Toggle Button (min 44px) */}
-                          <div className="pt-1">
-                            <button
-                              type="button"
-                              aria-label={isSolutionOpen ? 'সমাধান লুকান' : 'সমাধান দেখুন'}
-                              onClick={() =>
-                                setExpandedSolutions((prev) => ({
-                                  ...prev,
-                                  [question.id]: !isSolutionOpen,
-                                }))
-                              }
-                              className="min-h-[44px] px-3.5 py-1.5 rounded-xl border border-[#D5D9E2] bg-white hover:bg-[#F2F4F8] text-xs font-semibold text-[#2A3BB0] flex items-center gap-1.5 transition-colors"
-                            >
-                              {isSolutionOpen ? (
-                                <>
-                                  <EyeOff className="w-4 h-4" />
-                                  <span>সমাধান লুকাও</span>
-                                </>
-                              ) : (
-                                <>
-                                  <Eye className="w-4 h-4" />
-                                  <span>সমাধান দেখো</span>
-                                </>
-                              )}
-                            </button>
-
-                            {/* Expanded Solution Box */}
-                            {isSolutionOpen && (
-                              <div className="mt-2.5 p-3.5 rounded-xl bg-[#F8FAFC] border border-[#E2E8F0] space-y-2 animate-in fade-in duration-150">
-                                <div className="text-[11px] font-bold text-[#2A3BB0] uppercase tracking-wider">
-                                  সমাধান:
-                                </div>
-                                <RichText text={question.solutionText} className="text-xs text-[#1B1F2A] leading-relaxed" />
-
-                                {question.solutionImageIds &&
-                                  question.solutionImageIds.map((imgId) => {
-                                    const url = imageUrls[imgId];
-                                    if (!url) return null;
-                                    return (
-                                      <div key={imgId} className="w-full my-2 overflow-hidden rounded-xl border border-[#D5D9E2] bg-white">
-                                        <img src={url} alt="সমাধানের চিত্র" className="w-full h-auto object-contain max-h-56" />
-                                      </div>
-                                    );
-                                  })}
-                              </div>
-                            )}
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))
+                  </article>
+                );
+              })
             )}
           </div>
         )}
       </main>
 
-      {/* Floating Action Button (+ Add question) on Questions Screen */}
+      {/* Floating Action Button (+ Add question) with Safe Area offset */}
       {currentView.level === 'questions' && (
         <button
           type="button"
@@ -1280,12 +1716,27 @@ export const CollectionScreen: React.FC = () => {
               editQuestionId: null,
             })
           }
-          className="fixed bottom-20 right-4 z-40 min-h-[48px] px-4 py-2.5 rounded-full bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91] text-white font-bold text-xs shadow-xl flex items-center gap-2 transition-transform hover:scale-105 active:scale-95"
+          style={{ bottom: 'calc(5rem + env(safe-area-inset-bottom, 0px))' }}
+          className="fixed right-4 z-40 min-h-[48px] px-4 py-2.5 rounded-full bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91] text-white font-bold text-xs shadow-xl flex items-center gap-2 transition-transform hover:scale-105 active:scale-95"
         >
           <Plus className="w-5 h-5 stroke-[2.5]" />
           <span>Add question</span>
         </button>
       )}
+
+      <ReferenceDialog
+        isOpen={referenceView.isOpen}
+        reference={referenceView.text}
+        onClose={() => setReferenceView({ isOpen: false, text: '' })}
+      />
+
+      {/* Full-screen Zoomable Image Viewer (Requirement 4) */}
+      <ImageViewerModal
+        isOpen={imageViewerState.isOpen}
+        images={imageViewerState.images}
+        initialIndex={imageViewerState.initialIndex}
+        onClose={() => setImageViewerState((prev) => ({ ...prev, isOpen: false }))}
+      />
 
       {/* Input Prompt Dialog (Add & Rename) */}
       <PromptDialog
@@ -1310,6 +1761,7 @@ export const CollectionScreen: React.FC = () => {
 
       {/* Full-Screen Question Add & Edit Modal */}
       <QuestionFormModal
+        scope={scope}
         isOpen={questionFormState.isOpen}
         initialTopicId={questionFormState.initialTopicId}
         editQuestionId={questionFormState.editQuestionId}
@@ -1325,8 +1777,21 @@ export const CollectionScreen: React.FC = () => {
         }}
       />
 
+      {/* Paste JSON Questions Modal */}
+      <PasteQuestionsModal
+        scope={scope}
+        isOpen={showPasteModal && currentView.level === 'questions'}
+        topicId={currentView.level === 'questions' ? currentView.topic.id : ''}
+        topicName={currentView.level === 'questions' ? currentView.topic.name : ''}
+        onClose={() => setShowPasteModal(false)}
+        onSuccess={() => {
+          loadData();
+        }}
+      />
+
       {/* Import Collection Modal */}
       <ImportCollectionModal
+        scope={scope}
         isOpen={showImportModal}
         onClose={() => setShowImportModal(false)}
         onSuccess={() => {

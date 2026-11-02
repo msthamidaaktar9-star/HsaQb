@@ -1,10 +1,12 @@
-import { db, type Subject, type Chapter, type Topic, type Stimulus, type Question, type Paper, type DbImage } from '../db/db';
+import { getDb, type CqScope, type Category, type Subject, type Chapter, type Topic, type Stimulus, type Question, type Paper, type DbImage } from '../db/db';
 import { blobToBase64, base64ToBlob, exportJsonFile } from './fileExport';
 import { compressImageToWebP } from './imageCompressor';
 
 export interface CollectionJsonSchema {
   version: string;
   type: 'qb-question-collection';
+  /** which collection this file belongs to: 'type' (Type CQ) or 'chapter' (Chapter CQ). Missing = legacy Type CQ file */
+  scope?: CqScope;
   exportedAt: string;
   subjects: Subject[];
   chapters: Chapter[];
@@ -21,6 +23,7 @@ export interface CollectionJsonSchema {
 export interface FullBackupJsonSchema {
   version: string;
   type: 'qb-full-backup';
+  scope?: CqScope;
   exportedAt: string;
   subjects: Subject[];
   chapters: Chapter[];
@@ -58,7 +61,11 @@ export interface ImportOptions {
 /**
  * Export Question Collection to JSON file
  */
-export async function exportQuestionCollection(): Promise<boolean> {
+export async function buildQuestionCollectionExport(
+  scope: CqScope = 'type',
+  pretty = true
+): Promise<{ fileName: string; json: string }> {
+  const db = getDb(scope);
   try {
     const [subjects, chapters, topics, stimuli, questions] = await Promise.all([
       db.subjects.toArray(),
@@ -99,6 +106,7 @@ export async function exportQuestionCollection(): Promise<boolean> {
     const payload: CollectionJsonSchema = {
       version: '1.0',
       type: 'qb-question-collection',
+      scope,
       exportedAt: new Date().toISOString(),
       subjects,
       chapters,
@@ -109,18 +117,27 @@ export async function exportQuestionCollection(): Promise<boolean> {
     };
 
     const dateStr = new Date().toISOString().split('T')[0];
-    const fileName = `qb-collection-${dateStr}.json`;
-    return await exportJsonFile(fileName, JSON.stringify(payload, null, 2));
+    const fileName = `qb-${scope === 'chapter' ? 'chapter' : 'type'}-cq-${dateStr}.json`;
+    return { fileName, json: pretty ? JSON.stringify(payload, null, 2) : JSON.stringify(payload) };
   } catch (err) {
     console.error('Failed to export question collection:', err);
     throw err;
   }
 }
 
+export async function exportQuestionCollection(scope: CqScope = 'type'): Promise<boolean> {
+  const { fileName, json } = await buildQuestionCollectionExport(scope, true);
+  return await exportJsonFile(fileName, json);
+}
+
 /**
  * Validate and generate preview statistics for an uploaded Collection JSON file
  */
-export async function parseAndValidateCollectionJson(jsonText: string): Promise<CollectionPreviewResult> {
+export async function parseAndValidateCollectionJson(
+  jsonText: string,
+  scope: CqScope = 'type'
+): Promise<CollectionPreviewResult> {
+  const db = getDb(scope);
   try {
     const data = JSON.parse(jsonText);
 
@@ -144,6 +161,26 @@ export async function parseAndValidateCollectionJson(jsonText: string): Promise<
       return {
         valid: false,
         errorMessage: 'অসম্পূর্ণ বা অবৈধ কাঠামো। ফাইলে বিষয়, অধ্যায়, টপিক বা প্রশ্ন তালিকা অনুপস্থিত।',
+        subjectsCount: 0,
+        chaptersCount: 0,
+        topicsCount: 0,
+        stimuliCount: 0,
+        totalQuestions: 0,
+        newQuestionsCount: 0,
+        duplicateQuestionsCount: 0,
+        missingImageFiles: [],
+      };
+    }
+
+    // A Chapter CQ file must not be imported into Type CQ (and vice versa)
+    const fileScope: CqScope = data.scope === 'chapter' ? 'chapter' : 'type';
+    if (fileScope !== scope) {
+      return {
+        valid: false,
+        errorMessage:
+          scope === 'chapter'
+            ? 'এটি Type CQ এর ফাইল। Chapter CQ তে ইমপোর্ট করতে Chapter CQ থেকে এক্সপোর্ট করা ফাইল দিন।'
+            : 'এটি Chapter CQ এর ফাইল। Type CQ তে ইমপোর্ট করতে Type CQ থেকে এক্সপোর্ট করা ফাইল দিন।',
         subjectsCount: 0,
         chaptersCount: 0,
         topicsCount: 0,
@@ -246,8 +283,10 @@ export async function parseAndValidateCollectionJson(jsonText: string): Promise<
  */
 export async function executeCollectionImport(
   payload: CollectionJsonSchema,
-  options: ImportOptions
+  options: ImportOptions,
+  scope: CqScope = 'type'
 ): Promise<{ subjects: number; questions: number; images: number }> {
+  const db = getDb(scope);
   const { mode, manualFiles = [] } = options;
 
   let imageSavedCount = 0;
@@ -339,10 +378,11 @@ export async function executeCollectionImport(
 /**
  * Generate Sample Collection JSON for downloading
  */
-export function getSampleCollectionJson(): string {
+export function getSampleCollectionJson(scope: CqScope = 'type'): string {
   const sampleData: CollectionJsonSchema = {
     version: '1.0',
     type: 'qb-question-collection',
+    scope,
     exportedAt: new Date().toISOString(),
     subjects: [
       {
@@ -417,7 +457,8 @@ export function getSampleCollectionJson(): string {
 /**
  * Full System Backup: exports all tables and image blobs
  */
-export async function exportFullBackup(): Promise<boolean> {
+export async function exportFullBackup(scope: CqScope = 'type'): Promise<boolean> {
+  const db = getDb(scope);
   try {
     const [subjects, chapters, topics, stimuli, questions, papers, meta, images] = await Promise.all([
       db.subjects.toArray(),
@@ -445,6 +486,7 @@ export async function exportFullBackup(): Promise<boolean> {
     const fullPayload: FullBackupJsonSchema = {
       version: '1.0',
       type: 'qb-full-backup',
+      scope,
       exportedAt: new Date().toISOString(),
       subjects,
       chapters,
@@ -457,7 +499,7 @@ export async function exportFullBackup(): Promise<boolean> {
     };
 
     const dateStr = new Date().toISOString().split('T')[0];
-    const fileName = `qb-backup-${dateStr}.json`;
+    const fileName = `qb-${scope === 'chapter' ? 'chapter' : 'type'}-backup-${dateStr}.json`;
     return await exportJsonFile(fileName, JSON.stringify(fullPayload, null, 2));
   } catch (err) {
     console.error('Full backup export failed:', err);
@@ -468,8 +510,11 @@ export async function exportFullBackup(): Promise<boolean> {
 /**
  * Full System Restore: completely replaces database with backup content
  */
-export async function restoreFullBackup(jsonText: string): Promise<void> {
+/** `scope` omitted = decided by the backup file itself (old files without a scope = Type CQ) */
+export async function restoreFullBackup(jsonText: string, scope?: CqScope): Promise<void> {
   const data = JSON.parse(jsonText);
+  const target: CqScope = scope ?? (data && data.scope === 'chapter' ? 'chapter' : 'type');
+  const db = getDb(target);
 
   if (!data || typeof data !== 'object' || !Array.isArray(data.subjects) || !Array.isArray(data.questions)) {
     throw new Error('অবৈধ ব্যাকআপ ফাইল। ফাইলে ডাটাবেসের টেবিল পাওয়া যায়নি।');
@@ -513,4 +558,201 @@ export async function restoreFullBackup(jsonText: string): Promise<void> {
       }
     }
   );
+}
+
+
+/* ------------------------------------------------------------------
+ * Whole-app FULL backup (Type CQ + Chapter CQ + categories + papers + images + meta)
+ * ---------------------------------------------------------------- */
+
+export type RestoreMode = 'replace' | 'merge';
+
+interface DbDump {
+  subjects: Subject[];
+  chapters: Chapter[];
+  topics: Topic[];
+  stimuli: Stimulus[];
+  questions: Question[];
+  papers: Paper[];
+  categories: Category[];
+  meta: Array<{ key: string; value: any }>;
+  images: Array<{ id: string; fileName: string; data: string }>;
+}
+
+export interface AppFullBackupSchema {
+  version: string;
+  type: 'qb-app-full-backup';
+  exportedAt: string;
+  databases: { type: DbDump; chapter: DbDump };
+}
+
+async function dumpDb(scope: CqScope): Promise<DbDump> {
+  const db = getDb(scope);
+  const [subjects, chapters, topics, stimuli, questions, papers, categories, meta, images] = await Promise.all([
+    db.subjects.toArray(),
+    db.chapters.toArray(),
+    db.topics.toArray(),
+    db.stimuli.toArray(),
+    db.questions.toArray(),
+    db.papers.toArray(),
+    db.categories.toArray(),
+    db.meta.toArray(),
+    db.images.toArray(),
+  ]);
+  const exportedImages: DbDump['images'] = [];
+  for (const img of images) {
+    if (img.blob) {
+      exportedImages.push({ id: img.id, fileName: img.fileName, data: await blobToBase64(img.blob) });
+    }
+  }
+  return { subjects, chapters, topics, stimuli, questions, papers, categories, meta, images: exportedImages };
+}
+
+/** Build the whole-app backup (file name + JSON text) without saving it anywhere */
+export async function buildAppFullBackupExport(): Promise<{ fileName: string; json: string }> {
+  const [typeDump, chapterDump] = await Promise.all([dumpDb('type'), dumpDb('chapter')]);
+  const payload: AppFullBackupSchema = {
+    version: '2.0',
+    type: 'qb-app-full-backup',
+    exportedAt: new Date().toISOString(),
+    databases: { type: typeDump, chapter: chapterDump },
+  };
+  const dateStr = new Date().toISOString().split('T')[0];
+  return { fileName: `qb-full-backup-${dateStr}.json`, json: JSON.stringify(payload) };
+}
+
+/** Export EVERYTHING in the app (both question collections, categories, papers, images, settings) */
+export async function exportAppFullBackup(): Promise<boolean> {
+  const { fileName, json } = await buildAppFullBackupExport();
+  return await exportJsonFile(fileName, json);
+}
+
+export interface BackupFileInfo {
+  kind: 'app' | 'scope';
+  scope?: CqScope;
+  questions: number;
+  papers: number;
+}
+
+/** Look inside a backup file (used to show a summary before restoring) */
+export function inspectBackupFile(jsonText: string): BackupFileInfo {
+  let data: any;
+  try {
+    data = JSON.parse(jsonText);
+  } catch {
+    throw new Error('ফাইলটি পড়া যায়নি (JSON ফরম্যাট ঠিক নয়)');
+  }
+  if (data?.type === 'qb-app-full-backup' && data.databases) {
+    const t = data.databases.type || {};
+    const c = data.databases.chapter || {};
+    return {
+      kind: 'app',
+      questions: (t.questions?.length || 0) + (c.questions?.length || 0),
+      papers: (t.papers?.length || 0) + (c.papers?.length || 0),
+    };
+  }
+  if (data?.type === 'qb-full-backup' && Array.isArray(data.subjects) && Array.isArray(data.questions)) {
+    return {
+      kind: 'scope',
+      scope: data.scope === 'chapter' ? 'chapter' : 'type',
+      questions: data.questions.length,
+      papers: Array.isArray(data.papers) ? data.papers.length : 0,
+    };
+  }
+  throw new Error('এটি সম্পূর্ণ ব্যাকআপ ফাইল নয়। অ্যাপ থেকে এক্সপোর্ট করা ফুল ব্যাকআপ ফাইল দিন।');
+}
+
+async function addMissingRows(table: any, rows: Array<{ id: string }> | undefined): Promise<void> {
+  if (!rows?.length) return;
+  const existing: Array<any> = await table.bulkGet(rows.map((r) => r.id));
+  const missing = rows.filter((_, i) => !existing[i]);
+  if (missing.length) await table.bulkAdd(missing);
+}
+
+async function writeDump(scope: CqScope, dump: Partial<DbDump>, mode: RestoreMode): Promise<void> {
+  const db = getDb(scope);
+
+  // images first (blobs are created outside of the main transaction)
+  const imageRows: Array<{ id: string; fileName: string; blob: Blob }> = [];
+  for (const img of dump.images || []) {
+    if (img?.id && img.data) {
+      try {
+        imageRows.push({ id: img.id, fileName: img.fileName || `${img.id}.webp`, blob: base64ToBlob(img.data) });
+      } catch (e) {
+        console.warn('Skipping broken image in backup:', img.id, e);
+      }
+    }
+  }
+
+  const tables = [db.subjects, db.chapters, db.topics, db.stimuli, db.questions, db.papers, db.categories, db.meta, db.images];
+
+  await db.transaction('rw', tables, async () => {
+    if (mode === 'replace') {
+      await Promise.all(tables.map((t: any) => t.clear()));
+      if (dump.subjects?.length) await db.subjects.bulkAdd(dump.subjects);
+      if (dump.chapters?.length) await db.chapters.bulkAdd(dump.chapters);
+      if (dump.topics?.length) await db.topics.bulkAdd(dump.topics);
+      if (dump.stimuli?.length) await db.stimuli.bulkAdd(dump.stimuli);
+      if (dump.questions?.length) await db.questions.bulkAdd(dump.questions);
+      if (dump.categories?.length) await db.categories.bulkAdd(dump.categories);
+      if (dump.papers?.length) await db.papers.bulkAdd(dump.papers);
+      if (dump.meta?.length) await db.meta.bulkAdd(dump.meta);
+      if (imageRows.length) await db.images.bulkAdd(imageRows);
+      return;
+    }
+
+    // ---- merge: keep everything that already exists, only add what is missing ----
+    await addMissingRows(db.subjects, dump.subjects);
+    await addMissingRows(db.chapters, dump.chapters);
+    await addMissingRows(db.topics, dump.topics);
+    await addMissingRows(db.stimuli, dump.stimuli);
+    await addMissingRows(db.questions, dump.questions);
+    await addMissingRows(db.images, imageRows as any);
+
+    // categories: a category with the same name is reused (papers are re-pointed to it)
+    const existingCats: Category[] = await db.categories.toArray();
+    const byName = new Map<string, Category>(existingCats.map((c) => [c.name.trim().toLowerCase(), c]));
+    const catIdMap = new Map<string, Category>();
+    let nextOrder = existingCats.reduce((m, c) => Math.max(m, c.order || 0), 0) + 1;
+    for (const cat of dump.categories || []) {
+      const hit = byName.get(cat.name.trim().toLowerCase());
+      if (hit) {
+        catIdMap.set(cat.id, hit);
+      } else {
+        const existsById = await db.categories.get(cat.id);
+        if (existsById) {
+          catIdMap.set(cat.id, existsById);
+        } else {
+          const created: Category = { ...cat, order: nextOrder++ };
+          await db.categories.add(created);
+          byName.set(created.name.trim().toLowerCase(), created);
+          catIdMap.set(cat.id, created);
+        }
+      }
+    }
+
+    const papers = (dump.papers || []).map((p) => {
+      const target = p.categoryId ? catIdMap.get(p.categoryId) : undefined;
+      return target ? { ...p, categoryId: target.id, category: target.name } : p;
+    });
+    await addMissingRows(db.papers, papers);
+    // meta (selection, clipboard…) is left untouched in merge mode
+  });
+}
+
+/**
+ * Restore a backup file. Works with whole-app backups and with older single-collection backups.
+ * - replace: current data is erased and replaced by the backup
+ * - merge: backup data is added next to the current data (nothing existing is overwritten)
+ */
+export async function restoreAppBackup(jsonText: string, mode: RestoreMode): Promise<BackupFileInfo> {
+  const info = inspectBackupFile(jsonText);
+  const data = JSON.parse(jsonText);
+  if (info.kind === 'app') {
+    if (data.databases.type) await writeDump('type', data.databases.type, mode);
+    if (data.databases.chapter) await writeDump('chapter', data.databases.chapter, mode);
+  } else {
+    await writeDump(info.scope || 'type', data, mode);
+  }
+  return info;
 }

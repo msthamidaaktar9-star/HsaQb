@@ -1,18 +1,16 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { LatexEditor } from './LatexEditor';
+import { RichText } from './RichText';
+import { ImageViewerModal } from './ImageViewerModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useToast } from './Toast';
 import { toBn, toEn } from '../utils/toBn';
 import { useNavigation } from '../utils/navigation';
 import { compressImageToWebP } from '../utils/imageCompressor';
+import { exportImageFromUrl } from '../utils/imageExport';
+import { loadCustomBoards, saveCustomBoards, customBoardToOption, type CustomBoard } from '../utils/boards';
 import {
-  getSubjects,
-  getChapters,
-  getTopics,
-  saveImageBlob,
-  getImageBlobUrl,
-  getQuestionGroupForEdit,
-  saveQuestionGroup,
+  getApi,
   type Subject,
   type Chapter,
   type Topic,
@@ -20,22 +18,33 @@ import {
   type BoardUsage,
   type QuestionBlockInput,
 } from '../db/api';
+import type { CqScope } from '../db/db';
 import {
   X,
   Plus,
   Image as ImageIcon,
   Trash2,
   Tag,
-  Star,
+  Eye,
+  EyeOff,
+  RefreshCw,
+  Maximize2,
+  BookMarked,
   Layers,
   HelpCircle,
   Save,
   Check,
   AlertCircle,
   ChevronDown,
+  Download,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from 'lucide-react';
 
 export interface QuestionFormModalProps {
+  /** which collection (database) to work on — default Type CQ */
+  scope?: CqScope;
   isOpen: boolean;
   onClose: () => void;
   onSaved: () => void;
@@ -62,6 +71,380 @@ const DEFAULT_MARKS_BY_TYPE: Record<QuestionType, number> = {
   ঘ: 4,
 };
 
+const RATING_OPTIONS: Array<{ value: number; label: string }> = [
+  { value: 1, label: 'সহজ' },
+  { value: 2, label: 'মোটামুটি' },
+  { value: 3, label: 'মাঝারি' },
+  { value: 4, label: 'ভালো' },
+  { value: 5, label: 'চ্যালেঞ্জিং' },
+];
+
+type EditorMode = 'minimum' | 'full';
+
+/** Small rating dropdown (1-5) placed next to the eye (live preview) button */
+const RatingSelect: React.FC<{ value: number; onChange: (v: number) => void; ariaLabel: string }> = ({
+  value,
+  onChange,
+  ariaLabel,
+}) => (
+  <select
+    aria-label={ariaLabel}
+    value={value || 3}
+    onChange={(e) => onChange(parseInt(e.target.value, 10))}
+    className="min-h-[40px] max-w-[116px] px-2 py-1 rounded-lg border border-[#FDE047] bg-[#FEF9C3] text-[#713F12] text-[0.6875rem] font-bold focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+  >
+    {RATING_OPTIONS.map((r) => (
+      <option key={r.value} value={r.value}>
+        {toBn(r.value)}★ {r.label}
+      </option>
+    ))}
+  </select>
+);
+
+/** Eye button that toggles the live KaTeX preview */
+const EyeToggle: React.FC<{ open: boolean; onClick: () => void }> = ({ open, onClick }) => (
+  <button
+    type="button"
+    aria-label={open ? 'লাইভ প্রিভিউ বন্ধ করুন' : 'লাইভ প্রিভিউ দেখুন'}
+    aria-pressed={open}
+    onClick={onClick}
+    className={`min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg border transition-colors ${
+      open
+        ? 'bg-[#3B4FD8] border-[#3B4FD8] text-white'
+        : 'bg-[#EEF2FF] border-[#D5D9E2] text-[#3B4FD8] hover:bg-[#E0E7FF]'
+    }`}
+  >
+    {open ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+  </button>
+);
+
+/** Live KaTeX preview card shown when the eye button is on */
+const LivePreview: React.FC<{ text: string }> = ({ text }) => (
+  <div className="rounded-xl border border-[#D5D9E2] bg-[#F8FAFF] p-3.5 animate-in fade-in duration-150">
+    <div className="flex items-center gap-1.5 text-[0.6875rem] font-semibold text-[#2A3BB0] pb-1.5 mb-2 border-b border-[#E2E8F0]">
+      <Eye className="w-3.5 h-3.5" />
+      <span>লাইভ প্রিভিউ (KaTeX)</span>
+    </div>
+    {text.trim() ? (
+      <RichText text={text} className="text-sm" />
+    ) : (
+      <div className="text-xs text-[#64748B] italic">উপরে লিখলে এখানে প্রিভিউ দেখা যাবে।</div>
+    )}
+  </div>
+);
+
+/** Compact board dropdown — picking a board opens the year window (see BoardYearWindow) */
+const BoardSelect: React.FC<{
+  options: Array<{ value: string; label: string }>;
+  onPick: (board: string) => void;
+  onAddBoard: () => void;
+  ariaLabel: string;
+}> = ({ options, onPick, onAddBoard, ariaLabel }) => (
+  <select
+    aria-label={ariaLabel}
+    value=""
+    onChange={(e) => {
+      const v = e.target.value;
+      if (!v) return;
+      if (v === '__add_new_board__') {
+        onAddBoard();
+        return;
+      }
+      onPick(v);
+    }}
+    className="min-h-[40px] w-[64px] px-1 py-1 rounded-lg border border-[#D5D9E2] bg-white text-[#2A3BB0] text-[0.6875rem] font-bold focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+  >
+    <option value="" disabled>
+      বোর্ড
+    </option>
+    {options.map((b) => (
+      <option key={b.value} value={b.value}>
+        {b.label}
+      </option>
+    ))}
+    <option value="__add_new_board__">+ নতুন বোর্ড যুক্ত করুন</option>
+  </select>
+);
+
+/** Board + year tags already added to one section (উদ্দীপক / গ / ঘ …). Nothing is shown when empty. */
+const BoardChips: React.FC<{ chips: BoardUsage[]; onRemove: (board: string, year: number) => void }> = ({
+  chips,
+  onRemove,
+}) => {
+  if (chips.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Tag className="w-3.5 h-3.5 text-[#3B4FD8] shrink-0" />
+      {chips.map((c) =>
+        c.years.map((y) => (
+          <span
+            key={`${c.board}-${y}`}
+            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#EEF2FF] text-[#2A3BB0] border border-[#D5D9E2] text-xs font-semibold"
+          >
+            <span>
+              {c.board}'{toBn(String(y).slice(-2))}
+            </span>
+            <button
+              type="button"
+              aria-label={`${c.board} ${y} ট্যাগ মুছুন`}
+              onClick={() => onRemove(c.board, y)}
+              className="w-4 h-4 rounded-full flex items-center justify-center text-[#64748B] hover:text-red-600 hover:bg-white transition-colors"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </span>
+        ))
+      )}
+    </div>
+  );
+};
+
+interface BoardYearWindowProps {
+  board: string;
+  boardLabel: string;
+  addedYears: number[];
+  isCustom: boolean;
+  onPickYear: (year: number) => void;
+  onInvalidYear: () => void;
+  onDeleteBoard: () => void;
+  onClose: () => void;
+}
+
+/** Window that opens after a board is picked: tap a year to add the board + year tag */
+const BoardYearWindow: React.FC<BoardYearWindowProps> = ({
+  board,
+  boardLabel,
+  addedYears,
+  isCustom,
+  onPickYear,
+  onInvalidYear,
+  onDeleteBoard,
+  onClose,
+}) => {
+  const { registerBackHandler } = useNavigation();
+  const [manualYear, setManualYear] = useState('');
+
+  // Android back button closes this window first
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    return registerBackHandler(() => {
+      closeRef.current();
+      return true;
+    });
+  }, [registerBackHandler]);
+
+  const currentYear = new Date().getFullYear();
+  const years = Array.from({ length: Math.max(1, currentYear - 2010 + 1) }, (_, i) => currentYear - i);
+
+  const submitManual = () => {
+    const yearNum = parseInt(toEn(manualYear).trim(), 10);
+    if (isNaN(yearNum) || yearNum < 1990 || yearNum > 2099) {
+      onInvalidYear();
+      return;
+    }
+    onPickYear(yearNum);
+  };
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="সাল বাছুন"
+      onClick={onClose}
+      className="absolute inset-0 z-[55] bg-black/50 flex items-center justify-center px-5"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full rounded-2xl bg-white p-4 space-y-3 shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-sm font-bold text-[#2A3BB0]">সাল বাছুন</div>
+            <div className="text-[0.6875rem] font-medium text-[#64748B] truncate">{boardLabel}</div>
+          </div>
+          <button
+            type="button"
+            aria-label="বন্ধ করুন"
+            onClick={onClose}
+            className="min-h-[36px] min-w-[36px] -mt-1 -mr-1.5 flex items-center justify-center rounded-full text-[#64748B] hover:bg-[#F2F4F8]"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-4 gap-1.5 max-h-[224px] overflow-y-auto pr-0.5">
+          {years.map((y) => {
+            const added = addedYears.includes(y);
+            return (
+              <button
+                key={y}
+                type="button"
+                disabled={added}
+                aria-label={`${board} ${y}`}
+                onClick={() => onPickYear(y)}
+                className={`min-h-[44px] rounded-xl border text-xs font-semibold transition-colors flex items-center justify-center gap-1 ${
+                  added
+                    ? 'bg-[#EEF2FF] border-[#C7D2FE] text-[#94A3B8]'
+                    : 'bg-white border-[#D5D9E2] text-[#1B1F2A] hover:bg-[#EEF2FF] active:bg-[#E0E7FF]'
+                }`}
+              >
+                {added && <Check className="w-3.5 h-3.5 text-[#3B4FD8]" />}
+                <span>{toBn(y)}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-2 pt-2.5 border-t border-[#F2F4F8]">
+          <input
+            type="text"
+            inputMode="numeric"
+            aria-label="অন্য সাল লিখুন"
+            value={manualYear}
+            onChange={(e) => setManualYear(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                submitManual();
+              }
+            }}
+            placeholder="অন্য সাল (যেমন: ২০০৯)"
+            className="flex-1 min-w-0 min-h-[44px] px-3 py-2 rounded-xl border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] font-medium focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+          />
+          <button
+            type="button"
+            onClick={submitManual}
+            className="min-h-[44px] px-3.5 rounded-xl bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91] text-white text-xs font-semibold shrink-0"
+          >
+            + যোগ
+          </button>
+        </div>
+
+        {isCustom && (
+          <button
+            type="button"
+            onClick={onDeleteBoard}
+            className="text-[0.6875rem] font-medium text-red-600 underline"
+          >
+            এই বোর্ডটি তালিকা থেকে মুছুন ({board})
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+interface ImageStripProps {
+  title: string;
+  ids: string[];
+  urls: Record<string, string>;
+  /** Full Editor only: replace a picture / open a big preview */
+  fullFeatures: boolean;
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onReplace: (id: string) => void;
+  /** Full Editor only: export (download) the picture to the phone */
+  onExport: (id: string) => void;
+  onOpenViewer: (index: number) => void;
+  addAriaLabel: string;
+}
+
+/** Picture upload row. Minimum = add / remove. Full Editor = also replace + big preview */
+const ImageStrip: React.FC<ImageStripProps> = ({
+  title,
+  ids,
+  urls,
+  fullFeatures,
+  onAdd,
+  onRemove,
+  onReplace,
+  onExport,
+  onOpenViewer,
+  addAriaLabel,
+}) => (
+  <div className="pt-2.5 border-t border-[#F2F4F8] space-y-2.5">
+    <div className="flex items-center justify-between">
+      <span className="text-xs font-semibold text-[#1B1F2A]">{title}</span>
+      <button
+        type="button"
+        aria-label={addAriaLabel}
+        onClick={onAdd}
+        className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#2A3BB0] text-xs font-semibold flex items-center gap-1.5 transition-colors"
+      >
+        <ImageIcon className="w-4 h-4 text-[#3B4FD8]" />
+        <span>ছবি যোগ করো</span>
+      </button>
+    </div>
+
+    {ids.length > 0 && (
+      <div className={fullFeatures ? 'grid grid-cols-2 gap-2.5' : 'grid grid-cols-3 gap-2.5'}>
+        {ids.map((imgId, idx) => {
+          const url = urls[imgId];
+          return (
+            <div key={imgId} className="space-y-1.5">
+              <div className="relative rounded-xl overflow-hidden border border-[#D5D9E2] aspect-video bg-[#F8FAFC]">
+                {url ? (
+                  <img
+                    src={url}
+                    alt="ছবি"
+                    onClick={fullFeatures ? () => onOpenViewer(idx) : undefined}
+                    className={`w-full h-full object-cover ${fullFeatures ? 'cursor-zoom-in' : ''}`}
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-[0.625rem] text-[#64748B]">
+                    লোড হচ্ছে...
+                  </div>
+                )}
+                <button
+                  type="button"
+                  aria-label="ছবি মুছে ফেলুন"
+                  onClick={() => onRemove(imgId)}
+                  className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center shadow-md hover:bg-red-700"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              {fullFeatures && (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    aria-label="ছবি বদলান"
+                    title="বদলান"
+                    onClick={() => onReplace(imgId)}
+                    className="flex-1 min-h-[36px] rounded-lg border border-[#D5D9E2] bg-white hover:bg-[#EEF2FF] active:bg-[#E0E7FF] text-[#2A3BB0] flex items-center justify-center"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="ছবি এক্সপোর্ট করুন"
+                    title="এক্সপোর্ট (ডাউনলোড)"
+                    disabled={!url}
+                    onClick={() => onExport(imgId)}
+                    className="flex-1 min-h-[36px] rounded-lg border border-[#D5D9E2] bg-white hover:bg-[#EEF2FF] active:bg-[#E0E7FF] text-[#2A3BB0] flex items-center justify-center disabled:opacity-40 disabled:pointer-events-none"
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="বড় প্রিভিউ দেখুন"
+                    title="বড় দেখুন"
+                    onClick={() => onOpenViewer(idx)}
+                    className="flex-1 min-h-[36px] rounded-lg border border-[#D5D9E2] bg-white hover:bg-[#EEF2FF] active:bg-[#E0E7FF] text-[#2A3BB0] flex items-center justify-center"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+);
+
 interface QuestionFormBlock extends QuestionBlockInput {
   tempId: string; // Internal unique key for React lists
 }
@@ -72,7 +455,9 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
   onSaved,
   initialTopicId,
   editQuestionId,
+  scope = 'type' as CqScope,
 }) => {
+  const { getSubjects, getChapters, getTopics, saveImageBlob, getImageBlobUrl, getQuestionGroupForEdit, saveQuestionGroup } = getApi(scope);
   const { showToast } = useToast();
   const { registerBackHandler } = useNavigation();
 
@@ -97,10 +482,105 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
   const [stimulusImageIds, setStimulusImageIds] = useState<string[]>([]);
   const [stimulusImageUrls, setStimulusImageUrls] = useState<Record<string, string>>({});
 
-  // Board chips state
-  const [selectedBoard, setSelectedBoard] = useState<string>('DB');
-  const [boardYearInput, setBoardYearInput] = useState<string>('2025');
-  const [boardChips, setBoardChips] = useState<BoardUsage[]>([]);
+  // Stimulus-level extras (Minimum + Full Editor)
+  const [stimulusRating, setStimulusRating] = useState<number>(3);
+  const [stimulusBoards, setStimulusBoards] = useState<BoardUsage[]>([]);
+  // Full Editor only: where the question was collected from
+  const [reference, setReference] = useState<string>('');
+
+  // Editor mode — "Minimum" is ALWAYS the default when the form opens
+  const [editorMode, setEditorMode] = useState<EditorMode>('minimum');
+  const isFull = editorMode === 'full';
+
+  // Live-preview (eye button) toggles
+  const [stimulusPreviewOpen, setStimulusPreviewOpen] = useState(false);
+  const [solutionPreviewOpen, setSolutionPreviewOpen] = useState<Record<string, boolean>>({});
+
+  // Full Editor: big image preview + replace
+  const [viewer, setViewer] = useState<{ images: Array<{ url: string; alt?: string }>; index: number } | null>(null);
+  const replaceInputRef = useRef<HTMLInputElement>(null);
+  const [replaceTarget, setReplaceTarget] = useState<
+    { kind: 'stimulus'; imageId: string } | { kind: 'solution'; blockIndex: number; imageId: string } | null
+  >(null);
+
+  // Board → year window: which section (উদ্দীপক / a question block) and which board is being tagged
+  type BoardTarget = { kind: 'stimulus' } | { kind: 'question'; index: number };
+  const [yearPicker, setYearPicker] = useState<{ target: BoardTarget; board: string } | null>(null);
+
+  // Custom boards (user-added)
+  const [customBoards, setCustomBoards] = useState<CustomBoard[]>(() => loadCustomBoards());
+  const [showAddBoard, setShowAddBoard] = useState(false);
+  const [newBoardCode, setNewBoardCode] = useState('');
+  const [newBoardName, setNewBoardName] = useState('');
+
+  const allBoardOptions = useMemo(() => {
+    const base = BOARD_OPTIONS.filter((b) => b.value !== 'অন্যান্য');
+    const other = BOARD_OPTIONS.filter((b) => b.value === 'অন্যান্য');
+    const builtInCodes = new Set(BOARD_OPTIONS.map((b) => b.value));
+    const extra = customBoards.filter((b) => !builtInCodes.has(b.code)).map(customBoardToOption);
+    return [...base, ...extra, ...other];
+  }, [customBoards]);
+
+  const handleSaveNewBoard = () => {
+    const code = newBoardCode.trim().toUpperCase();
+    const name = newBoardName.trim();
+    if (!code) {
+      showToast('বোর্ডের সংক্ষিপ্ত কোড লিখুন (যেমন: CTB)');
+      return;
+    }
+    if (allBoardOptions.some((b) => b.value.toUpperCase() === code)) {
+      showToast('এই কোডের বোর্ড আগে থেকেই আছে');
+      return;
+    }
+    const next = [...customBoards, { code, name }];
+    setCustomBoards(next);
+    saveCustomBoards(next);
+    setNewBoardCode('');
+    setNewBoardName('');
+    setShowAddBoard(false);
+  };
+
+  const handleDeleteCustomBoard = (code: string) => {
+    const next = customBoards.filter((b) => b.code !== code);
+    setCustomBoards(next);
+    saveCustomBoards(next);
+  };
+
+  // ---- Board + year tags (board dropdown → year window) ----
+  const getBoardChips = (target: BoardTarget): BoardUsage[] =>
+    target.kind === 'stimulus' ? stimulusBoards : questionBlocks[target.index]?.usedInBoards || [];
+
+  const setBoardChips = (target: BoardTarget, next: BoardUsage[]) => {
+    if (target.kind === 'stimulus') {
+      setIsDirty(true);
+      setStimulusBoards(next);
+    } else {
+      updateQuestionBlock(target.index, 'usedInBoards', next);
+    }
+  };
+
+  const addBoardYear = (target: BoardTarget, board: string, year: number) => {
+    const chips = getBoardChips(target);
+    const existing = chips.find((c) => c.board === board);
+    if (existing) {
+      if (existing.years.includes(year)) return;
+      setBoardChips(
+        target,
+        chips.map((c) => (c.board === board ? { ...c, years: [...c.years, year].sort((a, b) => a - b) } : c))
+      );
+    } else {
+      setBoardChips(target, [...chips, { board, years: [year] }]);
+    }
+  };
+
+  const removeBoardYear = (target: BoardTarget, board: string, year: number) => {
+    setBoardChips(
+      target,
+      getBoardChips(target)
+        .map((c) => (c.board === board ? { ...c, years: c.years.filter((x) => x !== year) } : c))
+        .filter((c) => c.years.length > 0)
+    );
+  };
 
   // Questions blocks state
   const [questionBlocks, setQuestionBlocks] = useState<QuestionFormBlock[]>([
@@ -155,6 +635,18 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
     return unregister;
   }, [isOpen, isDirty, onClose, registerBackHandler]);
 
+  // Every time the form opens: Minimum mode, closed previews
+  useEffect(() => {
+    if (!isOpen) return;
+    setEditorMode('minimum');
+    setStimulusPreviewOpen(false);
+    setSolutionPreviewOpen({});
+    setStimulusRating(3);
+    setStimulusBoards([]);
+    setReference('');
+    setViewer(null);
+  }, [isOpen, editQuestionId]);
+
   // Load Initial Hierarchy & Edit Data
   useEffect(() => {
     if (!isOpen) return;
@@ -174,6 +666,9 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
           if (editData && isMounted) {
             setStimulusId(editData.stimulus?.id);
             setStimulusText(editData.stimulus?.text || '');
+            setStimulusRating(editData.stimulus?.rating || 3);
+            setStimulusBoards(editData.stimulus?.usedInBoards || []);
+            setReference(editData.stimulus?.reference || '');
             const stimImgIds = editData.stimulus?.imageIds || [];
             setStimulusImageIds(stimImgIds);
 
@@ -200,7 +695,6 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
 
             // Populate Questions blocks
             const blocks: QuestionFormBlock[] = [];
-            const allBoards: BoardUsage[] = [];
 
             for (const q of editData.questions) {
               blocks.push({
@@ -216,17 +710,6 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                 usedInBoards: q.usedInBoards || [],
               });
 
-              if (q.usedInBoards) {
-                for (const b of q.usedInBoards) {
-                  const existing = allBoards.find((item) => item.board === b.board);
-                  if (existing) {
-                    existing.years = Array.from(new Set([...existing.years, ...b.years]));
-                  } else {
-                    allBoards.push({ board: b.board, years: [...b.years] });
-                  }
-                }
-              }
-
               // Load solution images URLs
               if (q.solutionImageIds) {
                 for (const imgId of q.solutionImageIds) {
@@ -239,7 +722,6 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
             }
 
             setQuestionBlocks(blocks);
-            setBoardChips(allBoards);
           }
         } else {
           // Add Mode: Pre-fill hierarchy if initialTopicId provided
@@ -363,6 +845,73 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
     e.target.value = '';
   };
 
+  // Full Editor: replace one picture with another file from the phone
+  const startReplace = (target: NonNullable<typeof replaceTarget>) => {
+    setReplaceTarget(target);
+    replaceInputRef.current?.click();
+  };
+
+  const handleReplaceFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const target = replaceTarget;
+    e.target.value = '';
+    if (!file || !target) return;
+    try {
+      const { blob, fileName } = await compressImageToWebP(file, 800, 0.8);
+      const newId = await saveImageBlob(blob, fileName);
+      const previewUrl = URL.createObjectURL(blob);
+      setIsDirty(true);
+      if (target.kind === 'stimulus') {
+        setStimulusImageIds((prev) => prev.map((id) => (id === target.imageId ? newId : id)));
+        setStimulusImageUrls((prev) => ({ ...prev, [newId]: previewUrl }));
+      } else {
+        setSolutionImageUrls((prev) => ({ ...prev, [newId]: previewUrl }));
+        setQuestionBlocks((prev) => {
+          const next = [...prev];
+          const cur = next[target.blockIndex];
+          if (!cur) return prev;
+          next[target.blockIndex] = {
+            ...cur,
+            solutionImageIds: (cur.solutionImageIds || []).map((id) => (id === target.imageId ? newId : id)),
+          };
+          return next;
+        });
+      }
+      showToast('ছবি বদলানো হয়েছে');
+    } catch (err) {
+      console.error('Image replace failed:', err);
+      showToast('ছবি বদলাতে সমস্যা হয়েছে');
+    } finally {
+      setReplaceTarget(null);
+    }
+  };
+
+  const openViewer = (ids: string[], urls: Record<string, string>, index: number) => {
+    const images = ids.map((id) => ({ url: urls[id], alt: 'ছবি' })).filter((i) => !!i.url);
+    if (images.length === 0) return;
+    setViewer({ images, index: Math.min(index, images.length - 1) });
+  };
+
+  // Full Editor: export a picture to the phone (Download/QbCollection/Images) or download it in the browser
+  const handleExportImage = async (imageId: string, urls: Record<string, string>) => {
+    const url = urls[imageId];
+    if (!url) {
+      showToast('ছবিটি এখনো লোড হয়নি');
+      return;
+    }
+    try {
+      const result = await exportImageFromUrl(url, 'qb-image');
+      if (!result) {
+        showToast('ছবি সেভ করতে স্টোরেজের অনুমতি লাগবে');
+        return;
+      }
+      showToast(result.native ? `ছবি সেভ হয়েছে: ${result.savedPath}` : 'ছবি ডাউনলোড হয়েছে', 3000);
+    } catch (err) {
+      console.error('Image export failed:', err);
+      showToast('ছবি এক্সপোর্ট করতে সমস্যা হয়েছে');
+    }
+  };
+
   const handleRemoveStimulusImage = (imageId: string) => {
     setIsDirty(true);
     setStimulusImageIds((prev) => prev.filter((id) => id !== imageId));
@@ -414,55 +963,22 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
     });
   };
 
-  // Add Board Chip
-  const handleAddBoardChip = () => {
-    const rawYear = toEn(boardYearInput).trim();
-    const yearNum = parseInt(rawYear, 10);
-
-    if (isNaN(yearNum) || yearNum < 1990 || yearNum > 2099) {
-      showToast('সঠিক সাল লিখুন (যেমন: ২০২৫)');
-      return;
-    }
-
-    setIsDirty(true);
-    setBoardChips((prev) => {
-      const existing = prev.find((item) => item.board === selectedBoard);
-      if (existing) {
-        if (!existing.years.includes(yearNum)) {
-          return prev.map((item) =>
-            item.board === selectedBoard ? { ...item, years: [...item.years, yearNum].sort((a, b) => a - b) } : item
-          );
-        }
-        return prev;
-      }
-      return [...prev, { board: selectedBoard, years: [yearNum] }];
-    });
-  };
-
-  const handleRemoveBoardChip = (board: string, year: number) => {
-    setIsDirty(true);
-    setBoardChips((prev) => {
-      return prev
-        .map((item) => {
-          if (item.board === board) {
-            return { ...item, years: item.years.filter((y: number) => y !== year) };
-          }
-          return item;
-        })
-        .filter((item) => item.years.length > 0);
-    });
-  };
-
-  // BoardTag generated string
+  // BoardTag string saved on the stimulus (union of the stimulus + every question's boards)
   const computedBoardTag = useMemo(() => {
-    if (boardChips.length === 0) return '';
-    return boardChips
-      .map((b) => {
-        const shortYears = b.years.map((y: number) => String(y).slice(-2)).join(',');
-        return `${b.board}'${shortYears}`;
+    const merged: BoardUsage[] = [];
+    const all = [stimulusBoards, ...questionBlocks.map((b) => b.usedInBoards || [])];
+    all.forEach((list) =>
+      list.forEach((u) => {
+        const ex = merged.find((m) => m.board === u.board);
+        if (ex) ex.years = Array.from(new Set([...ex.years, ...u.years])).sort((x, y) => x - y);
+        else merged.push({ board: u.board, years: [...u.years] });
       })
+    );
+    if (merged.length === 0) return '';
+    return merged
+      .map((b) => `${b.board}'${b.years.map((y: number) => String(y).slice(-2)).join(',')}`)
       .join(', ');
-  }, [boardChips]);
+  }, [stimulusBoards, questionBlocks]);
 
   // Add Question Block
   const handleAddQuestionBlock = () => {
@@ -503,6 +1019,36 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
     }
 
     setQuestionBlocks((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // Move a question block one step up (-1) or down (+1) — Full Editor
+  const handleMoveQuestionBlock = (index: number, dir: -1 | 1) => {
+    const target = index + dir;
+    if (target < 0 || target >= questionBlocks.length) return;
+    const movedId = questionBlocks[index].tempId;
+    setIsDirty(true);
+    setQuestionBlocks((prev) => {
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+    // keep the moved block in view so the person can see where it went
+    setTimeout(() => {
+      document.getElementById(`qblock-${movedId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+  };
+
+  // Auto-arrange blocks in ক → খ → গ → ঘ order (stable: same type keeps its current order)
+  const handleSortBlocksByType = () => {
+    const rank: Record<string, number> = { ক: 0, খ: 1, গ: 2, ঘ: 3 };
+    const sorted = [...questionBlocks].sort((a, b) => (rank[a.type] ?? 9) - (rank[b.type] ?? 9));
+    if (sorted.every((b, i) => b.tempId === questionBlocks[i].tempId)) {
+      showToast('প্রশ্নগুলো আগে থেকেই ক-খ-গ-ঘ ক্রমে আছে');
+      return;
+    }
+    setIsDirty(true);
+    setQuestionBlocks(sorted);
+    showToast('ক-খ-গ-ঘ ক্রমে সাজানো হয়েছে');
   };
 
   // Update Question Block Field
@@ -555,6 +1101,8 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
 
     if (!selectedTopicId) {
       newErrors.topic = 'টপিক বাছুন';
+      // The hierarchy card is hidden in Minimum mode — show it so the topic can be picked
+      if (!isFull) setEditorMode('full');
     }
 
     if (!stimulusText.trim()) {
@@ -590,7 +1138,7 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
         solutionImageIds: q.solutionImageIds || [],
         answerText: q.answerText?.trim() || '',
         rating: q.rating || 3,
-        usedInBoards: boardChips,
+        usedInBoards: q.usedInBoards || [],
       }));
 
       await saveQuestionGroup({
@@ -599,6 +1147,9 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
         stimulusText: stimulusText.trim(),
         stimulusImageIds,
         boardTag: computedBoardTag,
+        stimulusUsedInBoards: stimulusBoards,
+        stimulusRating,
+        reference: reference.trim(),
         questions: questionsWithBoards,
         deletedQuestionIds,
       });
@@ -654,104 +1205,151 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
 
           <div className="flex items-center">
             {isDirty && (
-              <span className="text-[11px] bg-amber-400 text-amber-950 font-bold px-2 py-0.5 rounded-full shadow-2xs">
+              <span className="text-[0.6875rem] bg-amber-400 text-amber-950 font-bold px-2 py-0.5 rounded-full shadow-2xs">
                 অসংরক্ষিত
               </span>
             )}
           </div>
         </header>
 
+        {/* Mode switch: Minimum (default) | Full Editor */}
+        <div className="shrink-0 bg-white border-b border-[#D5D9E2] px-4 py-2">
+          <div
+            role="tablist"
+            aria-label="এডিটর মোড"
+            className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#F2F4F8] border border-[#D5D9E2]"
+          >
+            {(['minimum', 'full'] as EditorMode[]).map((m) => {
+              const active = editorMode === m;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setEditorMode(m)}
+                  className={`min-h-[40px] rounded-lg text-xs font-bold transition-colors ${
+                    active ? 'bg-[#3B4FD8] text-white shadow-sm' : 'text-[#2A3BB0] hover:bg-white'
+                  }`}
+                >
+                  {m === 'minimum' ? 'Minimum' : 'Full Editor'}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Scrollable Form Content */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 pb-28">
-          
-          {/* Section 1: Subject, Chapter, Topic Selection */}
-          <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5">
-            <div className="flex items-center gap-2 pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
-              <Layers className="w-4 h-4 text-[#3B4FD8]" />
-              <span>বিষয়, অধ্যায় ও টপিক নির্বাচন</span>
-            </div>
+          {/* Hidden file input shared by "ছবি বদলান" (Full Editor) */}
+          <input ref={replaceInputRef} type="file" accept="image/*" onChange={handleReplaceFile} className="hidden" />
 
-            {/* Subject Select */}
-            <div className="space-y-1">
-              <label className="block text-xs font-semibold text-[#1B1F2A]">বিষয়</label>
-              <div className="relative">
-                <select
-                  value={selectedSubjectId}
-                  onChange={(e) => handleSubjectChange(e.target.value)}
-                  className="w-full min-h-[44px] px-3.5 pr-8 py-2.5 rounded-xl border border-[#D5D9E2] bg-white text-xs font-medium text-[#1B1F2A] appearance-none focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
-                >
-                  <option value="">-- বিষয় নির্বাচন করুন --</option>
-                  {allSubjects.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {toBn(s.order)}. {s.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="w-4 h-4 text-[#64748B] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          {/* Section 1: Subject, Chapter, Topic Selection — Full Editor only */}
+          {isFull && (
+            <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5">
+              <div className="flex items-center gap-2 pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
+                <Layers className="w-4 h-4 text-[#3B4FD8]" />
+                <span>বিষয়, অধ্যায় ও টপিক নির্বাচন</span>
               </div>
-            </div>
 
-            {/* Chapter Select */}
-            <div className="space-y-1">
-              <label className="block text-xs font-semibold text-[#1B1F2A]">অধ্যায়</label>
-              <div className="relative">
-                <select
-                  value={selectedChapterId}
-                  disabled={!selectedSubjectId}
-                  onChange={(e) => handleChapterChange(e.target.value)}
-                  className="w-full min-h-[44px] px-3.5 pr-8 py-2.5 rounded-xl border border-[#D5D9E2] bg-white text-xs font-medium text-[#1B1F2A] appearance-none focus:outline-none focus:ring-2 focus:ring-[#3B4FD8] disabled:bg-[#F2F4F8] disabled:text-[#94A3B8]"
-                >
-                  <option value="">-- অধ্যায় নির্বাচন করুন --</option>
-                  {filteredChapters.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {toBn(c.order)}. {c.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="w-4 h-4 text-[#64748B] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              {/* Subject Select */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-[#1B1F2A]">বিষয়</label>
+                <div className="relative">
+                  <select
+                    value={selectedSubjectId}
+                    onChange={(e) => handleSubjectChange(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 pr-8 py-2.5 rounded-xl border border-[#D5D9E2] bg-white text-xs font-medium text-[#1B1F2A] appearance-none focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+                  >
+                    <option value="">-- বিষয় নির্বাচন করুন --</option>
+                    {allSubjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {toBn(s.order)}. {s.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-[#64748B] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
               </div>
-            </div>
 
-            {/* Topic Select */}
-            <div className="space-y-1">
-              <label className="block text-xs font-semibold text-[#1B1F2A]">টপিক *</label>
-              <div className="relative">
-                <select
-                  value={selectedTopicId}
-                  disabled={!selectedChapterId}
-                  onChange={(e) => handleTopicChange(e.target.value)}
-                  className={`w-full min-h-[44px] px-3.5 pr-8 py-2.5 rounded-xl border text-xs font-medium appearance-none focus:outline-none focus:ring-2 ${
-                    errors.topic
-                      ? 'border-red-500 bg-red-50/30 focus:ring-red-400 text-red-900'
-                      : 'border-[#D5D9E2] bg-white text-[#1B1F2A] focus:ring-[#3B4FD8]'
-                  } disabled:bg-[#F2F4F8] disabled:text-[#94A3B8]`}
-                >
-                  <option value="">-- টপিক নির্বাচন করুন --</option>
-                  {filteredTopics.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {toBn(t.order)}. {t.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="w-4 h-4 text-[#64748B] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              {/* Chapter Select */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-[#1B1F2A]">অধ্যায়</label>
+                <div className="relative">
+                  <select
+                    value={selectedChapterId}
+                    disabled={!selectedSubjectId}
+                    onChange={(e) => handleChapterChange(e.target.value)}
+                    className="w-full min-h-[44px] px-3.5 pr-8 py-2.5 rounded-xl border border-[#D5D9E2] bg-white text-xs font-medium text-[#1B1F2A] appearance-none focus:outline-none focus:ring-2 focus:ring-[#3B4FD8] disabled:bg-[#F2F4F8] disabled:text-[#94A3B8]"
+                  >
+                    <option value="">-- অধ্যায় নির্বাচন করুন --</option>
+                    {filteredChapters.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {toBn(c.order)}. {c.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-[#64748B] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
               </div>
-              {errors.topic && (
-                <p className="text-xs text-red-600 font-semibold flex items-center gap-1 pt-0.5">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  <span>{errors.topic}</span>
-                </p>
-              )}
-            </div>
-          </section>
 
-          {/* Section 2: Stimulus (উদ্দীপক) & Images */}
-          <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5">
-            <div className="flex items-center justify-between pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
-              <span className="flex items-center gap-1.5">
-                <HelpCircle className="w-4 h-4 text-[#3B4FD8]" />
-                <span>উদ্দীপক *</span>
+              {/* Topic Select */}
+              <div className="space-y-1">
+                <label className="block text-xs font-semibold text-[#1B1F2A]">টপিক *</label>
+                <div className="relative">
+                  <select
+                    value={selectedTopicId}
+                    disabled={!selectedChapterId}
+                    onChange={(e) => handleTopicChange(e.target.value)}
+                    className={`w-full min-h-[44px] px-3.5 pr-8 py-2.5 rounded-xl border text-xs font-medium appearance-none focus:outline-none focus:ring-2 ${
+                      errors.topic
+                        ? 'border-red-500 bg-red-50/30 focus:ring-red-400 text-red-900'
+                        : 'border-[#D5D9E2] bg-white text-[#1B1F2A] focus:ring-[#3B4FD8]'
+                    } disabled:bg-[#F2F4F8] disabled:text-[#94A3B8]`}
+                  >
+                    <option value="">-- টপিক নির্বাচন করুন --</option>
+                    {filteredTopics.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {toBn(t.order)}. {t.name}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-[#64748B] absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+                {errors.topic && (
+                  <p className="text-xs text-red-600 font-semibold flex items-center gap-1 pt-0.5">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    <span>{errors.topic}</span>
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Section 2: Stimulus (উদ্দীপক) — text, eye preview, rating, images, board */}
+          <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3">
+            <div className="flex items-center justify-between gap-2 pb-2 border-b border-[#F2F4F8]">
+              <span className="flex items-center gap-1.5 text-xs font-bold text-[#2A3BB0] min-w-0">
+                <HelpCircle className="w-4 h-4 text-[#3B4FD8] shrink-0" />
+                <span className="truncate">উদ্দীপক *</span>
               </span>
-              <span className="text-[11px] text-[#64748B] font-normal">KaTeX সূত্র সমর্থিত</span>
+              <div className="flex items-center gap-1 shrink-0">
+                <BoardSelect
+                  ariaLabel="উদ্দীপকটি কোন বোর্ডে এসেছে"
+                  options={allBoardOptions}
+                  onPick={(board) => setYearPicker({ target: { kind: 'stimulus' }, board })}
+                  onAddBoard={() => setShowAddBoard(true)}
+                />
+                <EyeToggle open={stimulusPreviewOpen} onClick={() => setStimulusPreviewOpen((v) => !v)} />
+                <RatingSelect
+                  value={stimulusRating}
+                  ariaLabel="উদ্দীপকের রেটিং"
+                  onChange={(v) => {
+                    setIsDirty(true);
+                    setStimulusRating(v);
+                  }}
+                />
+              </div>
             </div>
 
             <LatexEditor
@@ -761,7 +1359,9 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                 setStimulusText(val);
                 if (errors.stimulus) setErrors((prev) => ({ ...prev, stimulus: undefined }));
               }}
-              rows={4}
+              rows={isFull ? 4 : 2}
+              showToolbar={isFull}
+              showPreview={false}
               placeholder="এখানে উদ্দীপকের বিবরণ ও গাণিতিক সূত্র লিখুন..."
             />
             {errors.stimulus && (
@@ -771,199 +1371,185 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
               </p>
             )}
 
-            {/* Stimulus Images Upload & Thumbnails */}
-            <div className="pt-2 border-t border-[#F2F4F8] space-y-2.5">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-[#1B1F2A]">উদ্দীপকের ছবি</span>
-                <button
-                  type="button"
-                  aria-label="ছবি যোগ করুন"
-                  onClick={() => stimulusFileInputRef.current?.click()}
-                  className="min-h-[44px] px-3.5 py-1.5 rounded-xl bg-[#EEF2FF] hover:bg-[#E0E7FF] text-[#2A3BB0] text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                >
-                  <ImageIcon className="w-4 h-4 text-[#3B4FD8]" />
-                  <span>ছবি যোগ করো</span>
-                </button>
-                <input
-                  ref={stimulusFileInputRef}
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={handleUploadStimulusImages}
-                  className="hidden"
-                />
-              </div>
+            <BoardChips
+              chips={stimulusBoards}
+              onRemove={(board, year) => removeBoardYear({ kind: 'stimulus' }, board, year)}
+            />
 
-              {stimulusImageIds.length > 0 && (
-                <div className="grid grid-cols-3 gap-2.5 pt-1">
-                  {stimulusImageIds.map((imgId) => {
-                    const url = stimulusImageUrls[imgId];
-                    return (
-                      <div
-                        key={imgId}
-                        className="relative rounded-xl overflow-hidden border border-[#D5D9E2] aspect-video bg-[#F8FAFC] group"
-                      >
-                        {url ? (
-                          <img src={url} alt="উদ্দীপক ছবি" className="w-full h-full object-cover" />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center text-[10px] text-[#64748B]">
-                            লোড হচ্ছে...
-                          </div>
-                        )}
-                        <button
-                          type="button"
-                          aria-label="ছবি মুছে ফেলুন"
-                          onClick={() => handleRemoveStimulusImage(imgId)}
-                          className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center shadow-md hover:bg-red-700"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+            {stimulusPreviewOpen && <LivePreview text={stimulusText} />}
+
+            {/* Stimulus pictures */}
+            <ImageStrip
+              title="উদ্দীপকের ছবি"
+              ids={stimulusImageIds}
+              urls={stimulusImageUrls}
+              fullFeatures={isFull}
+              addAriaLabel="উদ্দীপকে ছবি যোগ করুন"
+              onAdd={() => stimulusFileInputRef.current?.click()}
+              onRemove={handleRemoveStimulusImage}
+              onReplace={(id) => startReplace({ kind: 'stimulus', imageId: id })}
+              onExport={(id) => handleExportImage(id, stimulusImageUrls)}
+              onOpenViewer={(i) => openViewer(stimulusImageIds, stimulusImageUrls, i)}
+            />
+            <input
+              ref={stimulusFileInputRef}
+              type="file"
+              multiple
+              accept="image/*"
+              onChange={handleUploadStimulusImages}
+              className="hidden"
+            />
           </section>
 
-          {/* Section 3: Board Tags (বোর্ড ও সাল চিপস) */}
-          <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5">
-            <div className="flex items-center gap-2 pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
-              <Tag className="w-4 h-4 text-[#3B4FD8]" />
-              <span>বোর্ড ট্যাগ ও পরীক্ষার সাল</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {/* Board Dropdown */}
-              <select
-                value={selectedBoard}
-                onChange={(e) => setSelectedBoard(e.target.value)}
-                className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-[#D5D9E2] bg-white text-xs font-medium text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
-              >
-                {BOARD_OPTIONS.map((b) => (
-                  <option key={b.value} value={b.value}>
-                    {b.label}
-                  </option>
-                ))}
-              </select>
-
-              {/* Year Input */}
+          {/* Reference (Full Editor only) */}
+          {isFull && (
+            <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-2.5">
+              <div className="flex items-center gap-2 pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
+                <BookMarked className="w-4 h-4 text-[#3B4FD8]" />
+                <span>রেফারেন্স (প্রশ্নটি কোথা থেকে সংগ্রহ)</span>
+              </div>
               <input
                 type="text"
-                value={boardYearInput}
-                onChange={(e) => setBoardYearInput(e.target.value)}
-                placeholder="সাল (যেমন: ২০২৫)"
-                className="w-24 min-h-[44px] px-3 py-2 rounded-xl border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] text-center font-medium focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+                value={reference}
+                onChange={(e) => {
+                  setIsDirty(true);
+                  setReference(e.target.value);
+                }}
+                placeholder="যেমন: মেরি জি প্রশ্ন ব্যাংক"
+                className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
               />
+              <p className="text-[0.6875rem] text-[#64748B]">
+                প্রশ্ন কার্ডের থ্রি ডট মেনুর "রেফারেন্স দেখুন" অপশনে এটি দেখা যাবে।
+              </p>
+            </section>
+          )}
 
-              {/* Add Board Chip Button */}
-              <button
-                type="button"
-                aria-label="বোর্ড যোগ করুন"
-                onClick={handleAddBoardChip}
-                className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91] text-white text-xs font-semibold shrink-0"
-              >
-                + যোগ
-              </button>
-            </div>
-
-            {/* Chips Container */}
-            <div className="flex flex-wrap gap-1.5 pt-1 min-h-[32px]">
-              {boardChips.length === 0 ? (
-                <span className="text-xs text-[#64748B] italic">কোনো বোর্ড ট্যাগ যোগ করা হয়নি</span>
-              ) : (
-                boardChips.map((b) =>
-                  b.years.map((y: number) => (
-                    <span
-                      key={`${b.board}-${y}`}
-                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#EEF2FF] text-[#2A3BB0] border border-[#D5D9E2] text-xs font-semibold shadow-2xs"
-                    >
-                      <span>
-                        {b.board}'{toBn(String(y).slice(-2))}
-                      </span>
-                      <button
-                        type="button"
-                        aria-label={`${b.board} ${y} ট্যাগ মুছুন`}
-                        onClick={() => handleRemoveBoardChip(b.board, y)}
-                        className="w-4 h-4 rounded-full flex items-center justify-center text-[#64748B] hover:text-red-600 hover:bg-white transition-colors"
-                      >
-                        <X className="w-3 h-3" />
-                      </button>
-                    </span>
-                  ))
-                )
-              )}
-            </div>
-          </section>
-
-          {/* Section 4: Question Blocks List */}
+          {/* Section 3: Question Blocks (গ, ঘ …) */}
           <section className="space-y-4">
-            <div className="flex items-center justify-between text-xs font-bold text-[#1B1F2A] px-1">
-              <span>প্রশ্ন তালিকা ({toBn(questionBlocks.length)}টি প্রশ্ন)</span>
-              <span className="text-[#64748B] text-[11px] font-normal">গ ও ঘ বা অন্য প্রকার</span>
-            </div>
+            {isFull && (
+              <div className="flex items-center justify-between text-xs font-bold text-[#1B1F2A] px-1">
+                <span>প্রশ্ন তালিকা ({toBn(questionBlocks.length)}টি প্রশ্ন)</span>
+                {questionBlocks.length > 1 ? (
+                  <button
+                    type="button"
+                    aria-label="ক খ গ ঘ ক্রমে সাজাও"
+                    onClick={handleSortBlocksByType}
+                    className="min-h-[36px] px-3 rounded-lg border border-[#D5D9E2] bg-white hover:bg-[#EEF2FF] active:bg-[#E0E7FF] text-[#2A3BB0] text-[0.6875rem] font-bold flex items-center gap-1.5"
+                  >
+                    <ArrowUpDown className="w-3.5 h-3.5" />
+                    <span>ক-খ-গ-ঘ সাজাও</span>
+                  </button>
+                ) : (
+                  <span className="text-[#64748B] text-[0.6875rem] font-normal">গ ও ঘ বা অন্য প্রকার</span>
+                )}
+              </div>
+            )}
 
             {questionBlocks.map((block, index) => {
               const solInputId = `sol-file-${block.tempId}`;
               const qError = errors.questions?.[block.tempId];
+              const solPreviewOpen = !!solutionPreviewOpen[block.tempId];
 
               return (
                 <div
                   key={block.tempId}
-                  className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5"
+                  id={`qblock-${block.tempId}`}
+                  className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3"
                 >
                   {/* Block Header */}
                   <div className="flex items-center justify-between pb-2.5 border-b border-[#F2F4F8]">
-                    <div className="flex items-center gap-2">
-                      {/* Type Dropdown */}
-                      <select
-                        value={block.type}
-                        onChange={(e) =>
-                          updateQuestionBlock(index, 'type', e.target.value as QuestionType)
-                        }
-                        className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#3B4FD8] text-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-white"
-                      >
-                        <option value="ক">ক</option>
-                        <option value="খ">খ</option>
-                        <option value="গ">গ</option>
-                        <option value="ঘ">ঘ</option>
-                      </select>
+                    {isFull ? (
+                      <div className="flex items-center gap-2">
+                        {/* Type Dropdown */}
+                        <select
+                          value={block.type}
+                          onChange={(e) => updateQuestionBlock(index, 'type', e.target.value as QuestionType)}
+                          className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#3B4FD8] text-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-white"
+                        >
+                          <option value="ক">ক</option>
+                          <option value="খ">খ</option>
+                          <option value="গ">গ</option>
+                          <option value="ঘ">ঘ</option>
+                        </select>
 
-                      {/* Marks Input */}
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-semibold text-[#1B1F2A]">নম্বর:</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={20}
-                          value={block.marks}
-                          onChange={(e) =>
-                            updateQuestionBlock(index, 'marks', Math.max(1, parseInt(e.target.value, 10) || 1))
-                          }
-                          className="w-14 min-h-[44px] px-2 py-1 text-center font-bold text-xs rounded-xl border border-[#D5D9E2] bg-white text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
-                        />
+                        {/* Marks Input */}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-semibold text-[#1B1F2A]">নম্বর:</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={block.marks}
+                            onChange={(e) =>
+                              updateQuestionBlock(index, 'marks', Math.max(1, parseInt(e.target.value, 10) || 1))
+                            }
+                            className="w-14 min-h-[44px] px-2 py-1 text-center font-bold text-xs rounded-xl border border-[#D5D9E2] bg-white text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+                          />
+                        </div>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="min-h-[32px] min-w-[32px] px-3 rounded-lg bg-[#3B4FD8] text-white text-xs font-bold flex items-center justify-center">
+                          {block.type}
+                        </span>
+                        <span className="text-[0.6875rem] font-semibold text-[#64748B]">
+                          {toBn(block.marks)} নম্বর
+                        </span>
+                      </div>
+                    )}
 
-                    {/* Delete Block Button */}
-                    <button
-                      type="button"
-                      aria-label="এই প্রশ্ন ব্লকটি মুছে ফেলুন"
-                      disabled={questionBlocks.length <= 1}
-                      onClick={() => handleRemoveQuestionBlock(index)}
-                      className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:opacity-30 disabled:pointer-events-none transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {/* Reorder + Delete — Full Editor only */}
+                    {isFull && (
+                      <div className="flex items-center">
+                        <button
+                          type="button"
+                          aria-label="এই প্রশ্নটি উপরে সরান"
+                          disabled={index === 0}
+                          onClick={() => handleMoveQuestionBlock(index, -1)}
+                          className="min-h-[44px] min-w-[40px] flex items-center justify-center rounded-xl text-[#2A3BB0] hover:bg-[#EEF2FF] active:bg-[#E0E7FF] disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                        >
+                          <ArrowUp className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="এই প্রশ্নটি নিচে সরান"
+                          disabled={index === questionBlocks.length - 1}
+                          onClick={() => handleMoveQuestionBlock(index, 1)}
+                          className="min-h-[44px] min-w-[40px] flex items-center justify-center rounded-xl text-[#2A3BB0] hover:bg-[#EEF2FF] active:bg-[#E0E7FF] disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                        >
+                          <ArrowDown className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="এই প্রশ্ন ব্লকটি মুছে ফেলুন"
+                          disabled={questionBlocks.length <= 1}
+                          onClick={() => handleRemoveQuestionBlock(index)}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Question Text */}
+                  {/* Question Text (no live preview here) */}
                   <div className="space-y-1">
                     <LatexEditor
-                      label={`প্রশ্ন (${block.type}) এর বিবরণ *`}
+                      label={`প্রশ্ন (${block.type}) *`}
                       value={block.questionText}
                       onChange={(val) => updateQuestionBlock(index, 'questionText', val)}
-                      rows={3}
+                      rows={isFull ? 3 : 2}
+                      showToolbar={isFull}
+                      showHint={isFull}
+                      headerRight={
+                        <BoardSelect
+                          ariaLabel={`প্রশ্ন (${block.type}) কোন বোর্ডে এসেছে`}
+                          options={allBoardOptions}
+                          onPick={(board) => setYearPicker({ target: { kind: 'question', index }, board })}
+                          onAddBoard={() => setShowAddBoard(true)}
+                        />
+                      }
+                      showPreview={false}
                       placeholder="প্রশ্নের মূল বক্তব্য লিখুন..."
                     />
                     {qError && (
@@ -972,134 +1558,94 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                         <span>{qError}</span>
                       </p>
                     )}
+                    <BoardChips
+                      chips={block.usedInBoards || []}
+                      onRemove={(board, year) => removeBoardYear({ kind: 'question', index }, board, year)}
+                    />
                   </div>
 
-                  {/* Solution Text */}
-                  <div className="space-y-1 pt-1 border-t border-[#F2F4F8]">
+                  {/* Solution: label + eye + rating */}
+                  <div className="space-y-2.5 pt-2.5 border-t border-[#F2F4F8]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#2A3BB0]">সমাধান</span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <EyeToggle
+                          open={solPreviewOpen}
+                          onClick={() =>
+                            setSolutionPreviewOpen((prev) => ({ ...prev, [block.tempId]: !solPreviewOpen }))
+                          }
+                        />
+                        <RatingSelect
+                          value={block.rating || 3}
+                          ariaLabel={`প্রশ্ন (${block.type}) এর রেটিং`}
+                          onChange={(v) => updateQuestionBlock(index, 'rating', v)}
+                        />
+                      </div>
+                    </div>
+
                     <LatexEditor
-                      label="সমাধান (LaTeX KaTeX)"
                       value={block.solutionText}
                       onChange={(val) => updateQuestionBlock(index, 'solutionText', val)}
-                      rows={3}
+                      rows={isFull ? 3 : 2}
+                      showToolbar={isFull}
+                      showPreview={false}
                       placeholder="ধাপে ধাপে সমাধান লিখুন..."
                     />
+
+                    {solPreviewOpen && <LivePreview text={block.solutionText} />}
                   </div>
 
-                  {/* Solution Images Upload */}
-                  <div className="space-y-2 pt-1 border-t border-[#F2F4F8]">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-[#1B1F2A]">সমাধানের ছবি</span>
-                      <button
-                        type="button"
-                        aria-label="সমাধানের ছবি যোগ করুন"
-                        onClick={() => document.getElementById(solInputId)?.click()}
-                        className="min-h-[44px] px-3 py-1.5 rounded-xl border border-[#D5D9E2] bg-[#F2F4F8] hover:bg-[#EEF2FF] text-[#2A3BB0] text-xs font-medium flex items-center gap-1.5 transition-colors"
-                      >
-                        <ImageIcon className="w-3.5 h-3.5 text-[#3B4FD8]" />
-                        <span>ছবি যোগ</span>
-                      </button>
+                  {/* Solution pictures */}
+                  <ImageStrip
+                    title="সমাধানের ছবি"
+                    ids={block.solutionImageIds || []}
+                    urls={solutionImageUrls}
+                    fullFeatures={isFull}
+                    addAriaLabel="সমাধানের ছবি যোগ করুন"
+                    onAdd={() => document.getElementById(solInputId)?.click()}
+                    onRemove={(id) => handleRemoveSolutionImage(index, id)}
+                    onReplace={(id) => startReplace({ kind: 'solution', blockIndex: index, imageId: id })}
+                    onExport={(id) => handleExportImage(id, solutionImageUrls)}
+                    onOpenViewer={(i) => openViewer(block.solutionImageIds || [], solutionImageUrls, i)}
+                  />
+                  <input
+                    id={solInputId}
+                    type="file"
+                    multiple
+                    accept="image/*"
+                    onChange={(e) => handleUploadSolutionImages(index, e)}
+                    className="hidden"
+                  />
+
+                  {/* Short Answer — Full Editor only */}
+                  {isFull && (
+                    <div className="space-y-1 pt-2.5 border-t border-[#F2F4F8]">
+                      <label className="block text-xs font-semibold text-[#1B1F2A]">সংক্ষিপ্ত উত্তর (ঐচ্ছিক)</label>
                       <input
-                        id={solInputId}
-                        type="file"
-                        multiple
-                        accept="image/*"
-                        onChange={(e) => handleUploadSolutionImages(index, e)}
-                        className="hidden"
+                        type="text"
+                        value={block.answerText || ''}
+                        onChange={(e) => updateQuestionBlock(index, 'answerText', e.target.value)}
+                        placeholder="যেমন: -5.78 × 10⁻¹⁰ J kg⁻¹"
+                        className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[#D5D9E2] bg-[#F2F4F8]/40 text-xs text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
                       />
                     </div>
-
-                    {block.solutionImageIds && block.solutionImageIds.length > 0 && (
-                      <div className="grid grid-cols-3 gap-2 pt-1">
-                        {block.solutionImageIds.map((imgId) => {
-                          const url = solutionImageUrls[imgId];
-                          return (
-                            <div
-                              key={imgId}
-                              className="relative rounded-xl overflow-hidden border border-[#D5D9E2] aspect-video bg-[#F8FAFC]"
-                            >
-                              {url ? (
-                                <img src={url} alt="সমাধান ছবি" className="w-full h-full object-cover" />
-                              ) : (
-                                <div className="w-full h-full flex items-center justify-center text-[10px] text-[#64748B]">
-                                  লোড হচ্ছে...
-                                </div>
-                              )}
-                              <button
-                                type="button"
-                                aria-label="ছবি মুছুন"
-                                onClick={() => handleRemoveSolutionImage(index, imgId)}
-                                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-red-600 text-white flex items-center justify-center shadow-md hover:bg-red-700"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Short Answer */}
-                  <div className="space-y-1 pt-1 border-t border-[#F2F4F8]">
-                    <label className="block text-xs font-semibold text-[#1B1F2A]">
-                      সংক্ষিপ্ত উত্তর (ঐচ্ছিক)
-                    </label>
-                    <input
-                      type="text"
-                      value={block.answerText || ''}
-                      onChange={(e) => updateQuestionBlock(index, 'answerText', e.target.value)}
-                      placeholder="যেমন: -5.78 × 10⁻¹⁰ J kg⁻¹"
-                      className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-[#D5D9E2] bg-[#F2F4F8]/40 text-xs text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
-                    />
-                  </div>
-
-                  {/* 5-Star Rating Picker */}
-                  <div className="pt-2 border-t border-[#F2F4F8] flex items-center justify-between">
-                    <span className="text-xs font-semibold text-[#1B1F2A]">কঠিনতার রেটিং</span>
-                    <div className="flex items-center gap-1.5">
-                      <div className="flex items-center">
-                        {[1, 2, 3, 4, 5].map((starVal) => {
-                          const isFilled = starVal <= (block.rating || 3);
-                          return (
-                            <button
-                              key={starVal}
-                              type="button"
-                              aria-label={`রেটিং ${toBn(starVal)}`}
-                              onClick={() => updateQuestionBlock(index, 'rating', starVal)}
-                              className="min-h-[44px] min-w-[36px] flex items-center justify-center p-1 text-amber-500 hover:scale-110 active:scale-95 transition-transform"
-                            >
-                              <Star
-                                className={`w-5 h-5 ${
-                                  isFilled ? 'fill-amber-400 text-amber-500' : 'text-slate-300'
-                                }`}
-                              />
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <span className="text-xs font-bold text-[#713F12] bg-[#FEF9C3] px-2 py-0.5 rounded-md border border-[#FDE047] whitespace-nowrap">
-                        {block.rating === 1 && 'সহজ'}
-                        {block.rating === 2 && 'মোটামুটি'}
-                        {block.rating === 3 && 'মাঝারি'}
-                        {block.rating === 4 && 'ভালো'}
-                        {block.rating === 5 && 'চ্যালেঞ্জিং'}
-                      </span>
-                    </div>
-                  </div>
+                  )}
                 </div>
               );
             })}
 
-            {/* "+ আরও প্রশ্ন যোগ করো" Button */}
-            <button
-              type="button"
-              aria-label="আরও প্রশ্ন যোগ করো"
-              onClick={handleAddQuestionBlock}
-              className="w-full min-h-[44px] px-4 py-2.5 rounded-2xl border-2 border-dashed border-[#3B4FD8] bg-[#EEF2FF]/50 hover:bg-[#EEF2FF] text-[#2A3BB0] text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-2xs"
-            >
-              <Plus className="w-4 h-4 text-[#3B4FD8]" />
-              <span>+ আরও প্রশ্ন যোগ করো</span>
-            </button>
+            {/* "+ আরও প্রশ্ন যোগ করো" — Full Editor only */}
+            {isFull && (
+              <button
+                type="button"
+                aria-label="আরও প্রশ্ন যোগ করো"
+                onClick={handleAddQuestionBlock}
+                className="w-full min-h-[44px] px-4 py-2.5 rounded-2xl border-2 border-dashed border-[#3B4FD8] bg-[#EEF2FF]/50 hover:bg-[#EEF2FF] text-[#2A3BB0] text-xs font-bold flex items-center justify-center gap-2 transition-colors shadow-2xs"
+              >
+                <Plus className="w-4 h-4 text-[#3B4FD8]" />
+                <span>+ আরও প্রশ্ন যোগ করো</span>
+              </button>
+            )}
           </section>
         </div>
 
@@ -1132,6 +1678,79 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
             </button>
           </div>
         </footer>
+
+        {/* Add a new custom board */}
+        {showAddBoard && (
+          <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center px-5">
+            <div className="w-full rounded-2xl bg-white p-4 space-y-3 shadow-2xl">
+              <div className="text-sm font-bold text-[#2A3BB0]">নতুন বোর্ড যুক্ত করুন</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newBoardCode}
+                  onChange={(e) => setNewBoardCode(e.target.value)}
+                  placeholder="কোড (যেমন: CTB)"
+                  className="w-28 min-h-[44px] px-3 py-2 rounded-xl border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] font-medium focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+                />
+                <input
+                  type="text"
+                  value={newBoardName}
+                  onChange={(e) => setNewBoardName(e.target.value)}
+                  placeholder="নাম (যেমন: চট্টগ্রাম বোর্ড)"
+                  className="flex-1 min-w-0 min-h-[44px] px-3 py-2 rounded-xl border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] font-medium focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSaveNewBoard}
+                  className="flex-1 min-h-[44px] rounded-xl bg-[#3B4FD8] hover:bg-[#2A3BB0] text-white text-xs font-semibold"
+                >
+                  সংরক্ষণ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddBoard(false);
+                    setNewBoardCode('');
+                    setNewBoardName('');
+                  }}
+                  className="flex-1 min-h-[44px] rounded-xl border border-[#D5D9E2] bg-white text-[#1B1F2A] text-xs font-semibold"
+                >
+                  বাতিল
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Year window — opens after a board is picked from the dropdown */}
+        {yearPicker && (
+          <BoardYearWindow
+            board={yearPicker.board}
+            boardLabel={allBoardOptions.find((b) => b.value === yearPicker.board)?.label || yearPicker.board}
+            addedYears={getBoardChips(yearPicker.target).find((c) => c.board === yearPicker.board)?.years || []}
+            isCustom={customBoards.some((b) => b.code === yearPicker.board)}
+            onPickYear={(year) => {
+              addBoardYear(yearPicker.target, yearPicker.board, year);
+              setYearPicker(null);
+            }}
+            onInvalidYear={() => showToast('সঠিক সাল লিখুন (যেমন: ২০২৫)')}
+            onDeleteBoard={() => {
+              handleDeleteCustomBoard(yearPicker.board);
+              setYearPicker(null);
+            }}
+            onClose={() => setYearPicker(null)}
+          />
+        )}
+
+        {/* Full-screen zoomable preview of a picture (Full Editor) */}
+        <ImageViewerModal
+          isOpen={!!viewer}
+          images={viewer?.images || []}
+          initialIndex={viewer?.index || 0}
+          onClose={() => setViewer(null)}
+        />
 
         {/* Confirm Dialog for Unsaved Changes on Exit */}
         <ConfirmDialog

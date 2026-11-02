@@ -20,7 +20,10 @@ export const Header: React.FC<HeaderProps> = ({
   rightAction,
 }) => {
   return (
-    <header className="sticky top-0 z-40 bg-[#3B4FD8] text-white shadow-md select-none transition-colors">
+    <header
+      className="sticky top-0 z-40 bg-[#3B4FD8] text-white shadow-md select-none transition-colors"
+      style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+    >
       <div className="flex items-center justify-between px-3 h-14 max-w-[390px] mx-auto">
         {/* Left Side: Back button or placeholder */}
         <div className="flex items-center min-w-[44px]">
@@ -44,7 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
             {title}
           </h1>
           {subtitle && (
-            <p className="text-[11px] text-white/80 truncate leading-tight mt-0.5">
+            <p className="text-[0.6875rem] text-white/80 truncate leading-tight mt-0.5">
               {subtitle}
             </p>
           )}

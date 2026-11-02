@@ -14,6 +14,7 @@ export interface KebabMenuProps {
   buttonAriaLabel?: string;
   align?: 'left' | 'right';
   className?: string;
+  buttonClassName?: string;
 }
 
 export const KebabMenu: React.FC<KebabMenuProps> = ({
@@ -21,6 +22,7 @@ export const KebabMenu: React.FC<KebabMenuProps> = ({
   buttonAriaLabel = 'আরও অপশন',
   align = 'right',
   className = '',
+  buttonClassName = '',
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -57,7 +59,10 @@ export const KebabMenu: React.FC<KebabMenuProps> = ({
         aria-haspopup="true"
         aria-expanded={isOpen}
         onClick={() => setIsOpen((prev) => !prev)}
-        className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full text-white/90 hover:text-white hover:bg-white/10 active:bg-white/20 transition-colors focus:outline-none focus:ring-2 focus:ring-white/40"
+        className={`min-h-[44px] min-w-[44px] flex items-center justify-center rounded-full transition-colors focus:outline-none ${
+          buttonClassName ||
+          'text-white/90 hover:text-white hover:bg-white/10 active:bg-white/20 focus:ring-2 focus:ring-white/40'
+        }`}
       >
         <MoreVertical className="w-5 h-5" />
       </button>
@@ -68,7 +73,7 @@ export const KebabMenu: React.FC<KebabMenuProps> = ({
           aria-orientation="vertical"
           className={`absolute ${
             align === 'right' ? 'right-0' : 'left-0'
-          } mt-1 w-48 bg-white rounded-xl shadow-xl border border-[#D5D9E2] py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 origin-top-right`}
+          } mt-1 w-max min-w-[12rem] max-w-[17rem] bg-white rounded-xl shadow-xl border border-[#D5D9E2] py-1.5 z-50 animate-in fade-in zoom-in-95 duration-100 origin-top-right`}
         >
           {items.length === 0 ? (
             <div className="px-4 py-2 text-xs text-[#64748B]">কোনো অপশন নেই</div>
@@ -89,7 +94,7 @@ export const KebabMenu: React.FC<KebabMenuProps> = ({
                 }`}
               >
                 {item.icon && <span className="w-4 h-4 flex items-center justify-center">{item.icon}</span>}
-                <span className="truncate">{item.label}</span>
+                <span className="leading-snug">{item.label}</span>
               </button>
             ))
           )}
