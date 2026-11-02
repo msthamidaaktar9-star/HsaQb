@@ -24,7 +24,6 @@ import {
   Plus,
   Image as ImageIcon,
   Trash2,
-  Tag,
   Eye,
   EyeOff,
   RefreshCw,
@@ -32,13 +31,12 @@ import {
   BookMarked,
   Layers,
   HelpCircle,
-  Save,
+  Undo2,
+  Redo2,
   Check,
   AlertCircle,
   ChevronDown,
   Download,
-  ArrowUp,
-  ArrowDown,
   ArrowUpDown,
 } from 'lucide-react';
 
@@ -231,8 +229,7 @@ const BoardChips: React.FC<{ chips: BoardUsage[]; onRemove: (board: string, year
 }) => {
   if (chips.length === 0) return null;
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      <Tag className="w-3 h-3 text-[#3B4FD8] shrink-0" />
+    <div className="flex flex-wrap items-center justify-end gap-1">
       {chips.map((c) =>
         c.years.map((y) => (
           <span
@@ -428,18 +425,18 @@ const ImageStrip: React.FC<ImageStripProps> = ({
 }) => (
   <div className="space-y-2">
     {(!hideAdd || title) && (
-      <div className="flex items-center gap-2">
-        {title && <span className="text-xs font-semibold text-[#1B1F2A]">{title}</span>}
+      <div className="flex items-center justify-end gap-2">
+        {title && <span className="mr-auto text-xs font-semibold text-[#1B1F2A]">{title}</span>}
         {!hideAdd && (
           <button
             type="button"
             aria-label={addAriaLabel}
             title="ছবি যোগ করুন"
             onClick={onAdd}
-            style={{ minHeight: 0, height: 36, width: 36 }}
-            className="rounded-lg border border-dashed border-[#3B4FD8] bg-[#EEF2FF] hover:bg-[#E0E7FF] active:bg-[#C7D2FE] text-[#3B4FD8] flex items-center justify-center transition-colors"
+            style={{ minHeight: 0, height: 28, width: 28 }}
+            className="rounded-md border border-dashed border-[#3B4FD8] bg-[#EEF2FF] hover:bg-[#E0E7FF] active:bg-[#C7D2FE] text-[#3B4FD8] flex items-center justify-center transition-colors"
           >
-            <Plus className="w-5 h-5" />
+            <Plus className="w-4 h-4" />
           </button>
         )}
       </div>
@@ -534,6 +531,10 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
+  // Full Editor: the subject / chapter / topic card can be minimised to save space
+  const [hierarchyOpen, setHierarchyOpen] = useState(false);
+  // Full Editor: which question block is waiting for the delete confirmation
+  const [deleteBlockIndex, setDeleteBlockIndex] = useState<number | null>(null);
 
   // Subjects / Chapters / Topics lists
   const [allSubjects, setAllSubjects] = useState<Subject[]>([]);
@@ -688,6 +689,99 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
 
   const stimulusFileInputRef = useRef<HTMLInputElement>(null);
 
+  // ---- Undo / Redo (snapshots of everything typed or changed in the form) ----
+  interface FormSnapshot {
+    stimulusText: string;
+    stimulusImageIds: string[];
+    stimulusRating: number;
+    stimulusBoards: BoardUsage[];
+    reference: string;
+    questionBlocks: QuestionFormBlock[];
+    deletedQuestionIds: string[];
+  }
+  const currentSnap: FormSnapshot = {
+    stimulusText,
+    stimulusImageIds,
+    stimulusRating,
+    stimulusBoards,
+    reference,
+    questionBlocks,
+    deletedQuestionIds,
+  };
+  const currentSnapKey = JSON.stringify(currentSnap);
+  const snapRef = useRef<{ snap: FormSnapshot; key: string }>({ snap: currentSnap, key: currentSnapKey });
+  snapRef.current = { snap: currentSnap, key: currentSnapKey };
+  const historyRef = useRef<{ stack: Array<{ snap: FormSnapshot; key: string }>; index: number }>({
+    stack: [],
+    index: -1,
+  });
+  const historyReadyRef = useRef(false);
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const [, setHistoryTick] = useState(0);
+
+  const commitHistory = () => {
+    if (!historyReadyRef.current) return;
+    const h = historyRef.current;
+    const latest = snapRef.current;
+    const top = h.stack[h.index];
+    if (top && top.key === latest.key) return;
+    h.stack = h.stack.slice(0, h.index + 1);
+    h.stack.push(latest);
+    if (h.stack.length > 100) h.stack.shift();
+    h.index = h.stack.length - 1;
+    setHistoryTick((t) => t + 1);
+  };
+
+  // Form finished loading → this is the starting point of the history
+  useEffect(() => {
+    if (!isOpen || historyEpoch === 0) return;
+    historyRef.current = { stack: [snapRef.current], index: 0 };
+    historyReadyRef.current = true;
+    setHistoryTick((t) => t + 1);
+  }, [historyEpoch, isOpen]);
+
+  // Typing is grouped: one history step per short pause
+  useEffect(() => {
+    if (!isOpen || !historyReadyRef.current) return;
+    const timer = setTimeout(commitHistory, 600);
+    return () => clearTimeout(timer);
+  }, [currentSnapKey, isOpen]);
+
+  const applySnapshot = (snap: FormSnapshot) => {
+    setStimulusText(snap.stimulusText);
+    setStimulusImageIds(snap.stimulusImageIds);
+    setStimulusRating(snap.stimulusRating);
+    setStimulusBoards(snap.stimulusBoards);
+    setReference(snap.reference);
+    setQuestionBlocks(snap.questionBlocks);
+    setDeletedQuestionIds(snap.deletedQuestionIds);
+    setIsDirty(true);
+    setErrors({});
+  };
+
+  const historyTop = historyRef.current.stack[historyRef.current.index];
+  const hasPendingChange = historyReadyRef.current && !!historyTop && historyTop.key !== currentSnapKey;
+  const canUndo = historyReadyRef.current && (historyRef.current.index > 0 || hasPendingChange);
+  const canRedo =
+    historyReadyRef.current && !hasPendingChange && historyRef.current.index < historyRef.current.stack.length - 1;
+
+  const handleUndo = () => {
+    commitHistory(); // keep what was typed just now as a step too
+    const h = historyRef.current;
+    if (h.index <= 0) return;
+    h.index -= 1;
+    applySnapshot(h.stack[h.index].snap);
+    setHistoryTick((t) => t + 1);
+  };
+
+  const handleRedo = () => {
+    const h = historyRef.current;
+    if (h.index >= h.stack.length - 1) return;
+    h.index += 1;
+    applySnapshot(h.stack[h.index].snap);
+    setHistoryTick((t) => t + 1);
+  };
+
   // Hardware Back Button interception
   useEffect(() => {
     if (!isOpen) return;
@@ -714,6 +808,9 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
     setStimulusBoards([]);
     setReference('');
     setViewer(null);
+    setHierarchyOpen(false);
+    setDeleteBlockIndex(null);
+    historyReadyRef.current = false;
   }, [isOpen, editQuestionId]);
 
   // Load Initial Hierarchy & Edit Data
@@ -842,7 +939,10 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
       } catch (err) {
         console.error('Failed to init question form:', err);
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+          setHistoryEpoch((n) => n + 1);
+        }
       }
     };
 
@@ -1090,23 +1190,6 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
     setQuestionBlocks((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // Move a question block one step up (-1) or down (+1) — Full Editor
-  const handleMoveQuestionBlock = (index: number, dir: -1 | 1) => {
-    const target = index + dir;
-    if (target < 0 || target >= questionBlocks.length) return;
-    const movedId = questionBlocks[index].tempId;
-    setIsDirty(true);
-    setQuestionBlocks((prev) => {
-      const next = [...prev];
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-    // keep the moved block in view so the person can see where it went
-    setTimeout(() => {
-      document.getElementById(`qblock-${movedId}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-  };
-
   // Auto-arrange blocks in ক → খ → গ → ঘ order (stable: same type keeps its current order)
   const handleSortBlocksByType = () => {
     const rank: Record<string, number> = { ক: 0, খ: 1, গ: 2, ঘ: 3 };
@@ -1172,6 +1255,7 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
       newErrors.topic = 'টপিক বাছুন';
       // The hierarchy card is hidden in Minimum mode — show it so the topic can be picked
       if (!isFull) setEditorMode('full');
+      setHierarchyOpen(true);
     }
 
     if (!stimulusText.trim()) {
@@ -1258,7 +1342,7 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
         
         {/* Header */}
         <header className="sticky top-0 z-30 bg-[#3B4FD8] text-white px-4 h-14 flex items-center justify-between shadow-md shrink-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
               aria-label="বন্ধ করুন"
@@ -1267,26 +1351,63 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
             >
               <X className="w-5 h-5 text-white" />
             </button>
-            <h2 id="question-modal-title" className="text-base font-bold text-white truncate">
+            <h2 id="question-modal-title" className="text-[0.9375rem] font-bold text-white truncate">
               {editQuestionId ? 'প্রশ্ন সম্পাদনা' : 'প্রশ্ন যোগ করো'}
             </h2>
           </div>
 
-          <div className="flex items-center">
+          <div className="flex items-center gap-0.5 shrink-0">
             {isDirty && (
-              <span className="text-[0.6875rem] bg-amber-400 text-amber-950 font-bold px-2 py-0.5 rounded-full shadow-2xs">
+              <span className="mr-1 text-[0.625rem] bg-amber-400 text-amber-950 font-bold px-1.5 py-0.5 rounded-full shadow-2xs">
                 অসংরক্ষিত
               </span>
             )}
+            <button
+              type="button"
+              aria-label="আনডু (পূর্বাবস্থায়)"
+              title="আনডু"
+              disabled={!canUndo || loading}
+              onClick={handleUndo}
+              style={{ minHeight: 0, height: 36, width: 36 }}
+              className="flex items-center justify-center rounded-full text-white hover:bg-white/10 active:bg-white/20 disabled:opacity-35 disabled:pointer-events-none transition-colors"
+            >
+              <Undo2 className="w-[18px] h-[18px]" />
+            </button>
+            <button
+              type="button"
+              aria-label="রিডু (আবার করুন)"
+              title="রিডু"
+              disabled={!canRedo || loading}
+              onClick={handleRedo}
+              style={{ minHeight: 0, height: 36, width: 36 }}
+              className="flex items-center justify-center rounded-full text-white hover:bg-white/10 active:bg-white/20 disabled:opacity-35 disabled:pointer-events-none transition-colors"
+            >
+              <Redo2 className="w-[18px] h-[18px]" />
+            </button>
+            <button
+              type="button"
+              aria-label="প্রশ্ন সেভ করুন"
+              title="সেভ"
+              disabled={loading}
+              onClick={handleSave}
+              style={{ minHeight: 0, height: 36, width: 36 }}
+              className="ml-0.5 flex items-center justify-center rounded-full bg-white text-[#3B4FD8] shadow-sm hover:bg-[#EEF2FF] active:bg-[#E0E7FF] disabled:opacity-50 transition-colors"
+            >
+              {loading ? (
+                <span className="w-4 h-4 rounded-full border-2 border-[#3B4FD8]/30 border-t-[#3B4FD8] animate-spin" />
+              ) : (
+                <Check className="w-5 h-5" strokeWidth={3} />
+              )}
+            </button>
           </div>
         </header>
 
         {/* Mode switch: Minimum (default) | Full Editor */}
-        <div className="shrink-0 bg-white border-b border-[#D5D9E2] px-4 py-2">
+        <div className="shrink-0 bg-white border-b border-[#D5D9E2] px-4 py-1.5">
           <div
             role="tablist"
             aria-label="এডিটর মোড"
-            className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#F2F4F8] border border-[#D5D9E2]"
+            className="grid grid-cols-2 gap-0.5 p-0.5 rounded-lg bg-[#F2F4F8] border border-[#D5D9E2]"
           >
             {(['minimum', 'full'] as EditorMode[]).map((m) => {
               const active = editorMode === m;
@@ -1297,7 +1418,8 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                   role="tab"
                   aria-selected={active}
                   onClick={() => setEditorMode(m)}
-                  className={`min-h-[40px] rounded-lg text-xs font-bold transition-colors ${
+                  style={{ minHeight: 0, height: 26 }}
+                  className={`rounded-md text-[0.6875rem] font-bold transition-colors ${
                     active ? 'bg-[#3B4FD8] text-white shadow-sm' : 'text-[#2A3BB0] hover:bg-white'
                   }`}
                 >
@@ -1309,18 +1431,36 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
         </div>
 
         {/* Scrollable Form Content */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 pb-28">
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 pb-6">
           {/* Hidden file input shared by "ছবি বদলান" (Full Editor) */}
           <input ref={replaceInputRef} type="file" accept="image/*" onChange={handleReplaceFile} className="hidden" />
 
           {/* Section 1: Subject, Chapter, Topic Selection — Full Editor only */}
           {isFull && (
-            <section className="bg-white rounded-2xl p-4 border border-[#D5D9E2] shadow-xs space-y-3.5">
-              <div className="flex items-center gap-2 pb-2 border-b border-[#F2F4F8] text-xs font-bold text-[#2A3BB0]">
-                <Layers className="w-4 h-4 text-[#3B4FD8]" />
-                <span>বিষয়, অধ্যায় ও টপিক নির্বাচন</span>
-              </div>
+            <section
+              className={`bg-white rounded-2xl px-4 border shadow-xs ${
+                errors.topic ? 'border-red-400' : 'border-[#D5D9E2]'
+              } ${hierarchyOpen ? 'py-3 space-y-3.5' : 'py-1'}`}
+            >
+              <button
+                type="button"
+                aria-expanded={hierarchyOpen}
+                aria-label={hierarchyOpen ? 'বিষয়, অধ্যায় ও টপিক বন্ধ করুন' : 'বিষয়, অধ্যায় ও টপিক খুলুন'}
+                onClick={() => setHierarchyOpen((v) => !v)}
+                style={{ minHeight: 0, height: hierarchyOpen ? 30 : 34 }}
+                className={`w-full flex items-center gap-2 text-xs font-bold text-[#2A3BB0] ${
+                  hierarchyOpen ? 'border-b border-[#F2F4F8]' : ''
+                }`}
+              >
+                <Layers className="w-4 h-4 text-[#3B4FD8] shrink-0" />
+                <span className="shrink-0">বিষয়, অধ্যায় ও টপিক নির্বাচন</span>
+                <span className="flex-1" />
+                <ChevronDown
+                  className={`w-4 h-4 text-[#64748B] shrink-0 transition-transform ${hierarchyOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
 
+              {hierarchyOpen && (<>
               {/* Subject Select */}
               <div className="space-y-1">
                 <label className="block text-xs font-semibold text-[#1B1F2A]">বিষয়</label>
@@ -1392,6 +1532,7 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                   </p>
                 )}
               </div>
+              </>)}
             </section>
           )}
 
@@ -1469,7 +1610,7 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
               className="hidden"
             />
 
-            {/* Reference: only the small box, its placeholder says what it is */}
+            {/* Reference: only the small box (Minimum + Full Editor) */}
             <input
               type="text"
               aria-label="রেফারেন্স"
@@ -1478,7 +1619,7 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                 setIsDirty(true);
                 setReference(e.target.value);
               }}
-              placeholder="যেমন: মেরি জি প্রশ্ন ব্যাংক"
+              placeholder="যেমন: রেফারেন্স লিখুন"
               style={{ height: 36 }}
               className="w-full px-3 rounded-lg border border-[#D5D9E2] bg-white text-xs text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
             />
@@ -1545,32 +1686,52 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                   {/* Block Header */}
                   <div className="flex items-center justify-between pb-2.5 border-b border-[#F2F4F8]">
                     {isFull ? (
-                      <div className="flex items-center gap-2">
-                        {/* Type Dropdown */}
-                        <select
-                          value={block.type}
-                          onChange={(e) => updateQuestionBlock(index, 'type', e.target.value as QuestionType)}
-                          className="min-h-[44px] px-3 py-1.5 rounded-xl bg-[#3B4FD8] text-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-white"
-                        >
-                          <option value="ক">ক</option>
-                          <option value="খ">খ</option>
-                          <option value="গ">গ</option>
-                          <option value="ঘ">ঘ</option>
-                        </select>
+                      <div className="flex items-center justify-between gap-1.5 w-full">
+                        <div className="flex items-center gap-1 min-w-0">
+                          {/* Type Dropdown */}
+                          <select
+                            aria-label="প্রশ্নের ধরন"
+                            value={block.type}
+                            onChange={(e) => updateQuestionBlock(index, 'type', e.target.value as QuestionType)}
+                            style={{ height: CTRL_H, minHeight: 0 }}
+                            className="px-1.5 rounded-md bg-[#3B4FD8] text-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]/50"
+                          >
+                            <option value="ক">ক</option>
+                            <option value="খ">খ</option>
+                            <option value="গ">গ</option>
+                            <option value="ঘ">ঘ</option>
+                          </select>
 
-                        {/* Marks Input */}
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-semibold text-[#1B1F2A]">নম্বর:</span>
+                          {/* Marks: just the number */}
                           <input
                             type="number"
                             min={1}
                             max={20}
+                            aria-label="প্রশ্নের নম্বর"
+                            title="নম্বর"
                             value={block.marks}
                             onChange={(e) =>
                               updateQuestionBlock(index, 'marks', Math.max(1, parseInt(e.target.value, 10) || 1))
                             }
-                            className="w-14 min-h-[44px] px-2 py-1 text-center font-bold text-xs rounded-xl border border-[#D5D9E2] bg-white text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8]"
+                            style={{ height: CTRL_H, minHeight: 0 }}
+                            className="w-9 px-0.5 text-center font-bold text-xs rounded-md border border-[#D5D9E2] bg-white text-[#1B1F2A] focus:outline-none focus:ring-2 focus:ring-[#3B4FD8] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                           />
+                        </div>
+
+                        {/* board / eye / rating / delete — icons only */}
+                        <div className="flex items-center gap-1 shrink-0">
+                          {questionControls}
+                          <button
+                            type="button"
+                            aria-label="এই প্রশ্ন ব্লকটি মুছে ফেলুন"
+                            title="মুছুন"
+                            disabled={questionBlocks.length <= 1}
+                            onClick={() => setDeleteBlockIndex(index)}
+                            style={{ minHeight: 0, height: CTRL_H, width: CTRL_H }}
+                            className="shrink-0 flex items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-500 hover:bg-red-100 active:bg-red-200 disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
                     ) : (
@@ -1588,53 +1749,17 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
                       </div>
                     )}
 
-                    {/* Reorder + Delete — Full Editor only */}
-                    {isFull && (
-                      <div className="flex items-center">
-                        <button
-                          type="button"
-                          aria-label="এই প্রশ্নটি উপরে সরান"
-                          disabled={index === 0}
-                          onClick={() => handleMoveQuestionBlock(index, -1)}
-                          className="min-h-[44px] min-w-[40px] flex items-center justify-center rounded-xl text-[#2A3BB0] hover:bg-[#EEF2FF] active:bg-[#E0E7FF] disabled:opacity-30 disabled:pointer-events-none transition-colors"
-                        >
-                          <ArrowUp className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="এই প্রশ্নটি নিচে সরান"
-                          disabled={index === questionBlocks.length - 1}
-                          onClick={() => handleMoveQuestionBlock(index, 1)}
-                          className="min-h-[44px] min-w-[40px] flex items-center justify-center rounded-xl text-[#2A3BB0] hover:bg-[#EEF2FF] active:bg-[#E0E7FF] disabled:opacity-30 disabled:pointer-events-none transition-colors"
-                        >
-                          <ArrowDown className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          aria-label="এই প্রশ্ন ব্লকটি মুছে ফেলুন"
-                          disabled={questionBlocks.length <= 1}
-                          onClick={() => handleRemoveQuestionBlock(index)}
-                          className="min-h-[44px] min-w-[44px] flex items-center justify-center rounded-xl text-red-500 hover:bg-red-50 disabled:opacity-30 disabled:pointer-events-none transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    )}
                   </div>
 
-                  {/* Question text. Minimum: no title, the controls sit in the গ / ঘ row above.
-                      Full Editor: "প্রশ্ন (গ)" title with board / eye / rating beside it, chips on the next line. */}
+                  {/* Question text — no title / hint text; board chips (newest on the right) sit right above the box */}
                   <div className="space-y-1.5">
-                    {!isFull && blockBoardChips}
+                    {blockBoardChips}
                     <LatexEditor
-                      label={isFull ? `প্রশ্ন (${block.type}) *` : undefined}
                       value={block.questionText}
                       onChange={(val) => updateQuestionBlock(index, 'questionText', val)}
                       rows={isFull ? 3 : 2}
                       showToolbar={isFull}
-                      showHint={isFull}
-                      headerRight={isFull ? questionControls : undefined}
-                      belowHeader={isFull ? blockBoardChips : undefined}
+                      showHint={false}
                       showPreview={false}
                       placeholder="প্রশ্নের মূল বক্তব্য লিখুন..."
                     />
@@ -1710,36 +1835,6 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
           </section>
         </div>
 
-        {/* Fixed Bottom Action Bar (Cancel & Save) */}
-        <footer className="absolute bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#D5D9E2] px-4 py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
-          <div className="grid grid-cols-2 gap-3 max-w-[360px] mx-auto">
-            <button
-              type="button"
-              onClick={handleAttemptClose}
-              disabled={loading}
-              className="w-full min-h-[44px] px-4 py-2.5 rounded-xl border border-[#D5D9E2] bg-white hover:bg-[#F2F4F8] active:bg-[#E5E9F0] text-sm font-semibold text-[#1B1F2A] transition-colors"
-            >
-              Cancel
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={loading}
-              className="w-full min-h-[44px] px-4 py-2.5 rounded-xl bg-[#3B4FD8] hover:bg-[#2A3BB0] active:bg-[#202E91] text-sm font-bold text-white shadow-md flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-            >
-              {loading ? (
-                <span>সংরক্ষণ হচ্ছে...</span>
-              ) : (
-                <>
-                  <Save className="w-4 h-4" />
-                  <span>Save</span>
-                </>
-              )}
-            </button>
-          </div>
-        </footer>
-
         {/* Add a new custom board */}
         {showAddBoard && (
           <div className="absolute inset-0 z-50 bg-black/50 flex items-center justify-center px-5">
@@ -1811,6 +1906,21 @@ export const QuestionFormModal: React.FC<QuestionFormModalProps> = ({
           images={viewer?.images || []}
           initialIndex={viewer?.index || 0}
           onClose={() => setViewer(null)}
+        />
+
+        {/* Small confirmation before a question block is deleted */}
+        <ConfirmDialog
+          isOpen={deleteBlockIndex !== null}
+          title="প্রশ্নটি মুছবেন?"
+          message={deleteBlockIndex !== null ? `(${questionBlocks[deleteBlockIndex]?.type || ''}) প্রশ্নটি মুছে ফেলা হবে।` : ''}
+          confirmText="মুছুন"
+          cancelText="না"
+          isDestructive={true}
+          onConfirm={() => {
+            if (deleteBlockIndex !== null) handleRemoveQuestionBlock(deleteBlockIndex);
+            setDeleteBlockIndex(null);
+          }}
+          onCancel={() => setDeleteBlockIndex(null)}
         />
 
         {/* Confirm Dialog for Unsaved Changes on Exit */}

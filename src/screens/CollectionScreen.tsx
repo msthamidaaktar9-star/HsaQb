@@ -52,7 +52,6 @@ import {
   PlusCircle,
   FileEdit,
   Trash2,
-  Tag,
   Award,
   Layers,
   Upload,
@@ -1649,7 +1648,6 @@ export const CollectionScreen: React.FC<CollectionScreenProps> = ({ scope = 'typ
                             key={bIdx}
                             className="px-2 py-0.5 rounded bg-white text-[#1B1F2A] text-[0.625rem] font-semibold border border-[#D5D9E2] flex items-center gap-1 shadow-2xs"
                           >
-                            <Tag className="w-3 h-3 text-[#64748B]" />
                             <span>
                               {b.board}'{b.years.map((y) => toBn(String(y).slice(-2))).join(',')}
                             </span>
@@ -1657,7 +1655,6 @@ export const CollectionScreen: React.FC<CollectionScreenProps> = ({ scope = 'typ
                         ))
                       ) : grp.stimulus?.boardTag ? (
                         <span className="px-2 py-0.5 rounded bg-white text-[#1B1F2A] text-[0.625rem] font-semibold border border-[#D5D9E2] flex items-center gap-1 shadow-2xs">
-                          <Tag className="w-3 h-3 text-[#64748B]" />
                           <span>{grp.stimulus.boardTag}</span>
                         </span>
                       ) : null}

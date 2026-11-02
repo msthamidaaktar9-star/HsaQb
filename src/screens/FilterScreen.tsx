@@ -19,7 +19,6 @@ import {
   ChevronDown,
   Eye,
   EyeOff,
-  Tag,
   Award,
   FolderOpen,
   Scissors,
@@ -292,7 +291,6 @@ const ResultCard: React.FC<ResultCardProps> = React.memo(
                 key={i}
                 className="px-2 py-0.5 rounded bg-white text-[#1B1F2A] text-[0.625rem] font-semibold border border-[#D5D9E2] flex items-center gap-1 shadow-2xs"
               >
-                <Tag className="w-3 h-3 text-[#64748B]" />
                 <span>
                   {b.board}'{(b.years || []).map((y) => toBn(String(y).slice(-2))).join(',')}
                 </span>
@@ -300,7 +298,6 @@ const ResultCard: React.FC<ResultCardProps> = React.memo(
             ))
           ) : row.stimulus?.boardTag ? (
             <span className="px-2 py-0.5 rounded bg-white text-[#1B1F2A] text-[0.625rem] font-semibold border border-[#D5D9E2] flex items-center gap-1 shadow-2xs">
-              <Tag className="w-3 h-3 text-[#64748B]" />
               <span>{row.stimulus.boardTag}</span>
             </span>
           ) : null}
